@@ -10,10 +10,7 @@ import {ReceiverValidator} from "../src/receiverValidator.sol";
 contract DeployReceiverValidatorScript is Script {
     function run() external returns (ReceiverValidator validator) {
         uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
-        address fixedReceiver = vm.envOr("RECEIVER_VALIDATOR_FIXED_RECEIVER", address(0));
-        if (fixedReceiver == address(0)) {
-            fixedReceiver = vm.envOr("MAINNET_RECEIVER_ADDR", address(0));
-        }
+        address fixedReceiver = vm.envAddress("MAINNET_RECEIVER_ADDR");
         require(fixedReceiver != address(0), "ReceiverValidator: receiver missing");
 
         vm.startBroadcast(deployerKey);
