@@ -12,7 +12,7 @@ import {JumperMock} from "./mocks/JumperMock.sol";
 
 contract RevenueBridgerSwapAndBridgeTest is Test {
     address private constant OWNER = 0xb2cc224c1c9feE385f8ad6a55b4d94E92359DC59;
-    address private constant MAINNET_RECIPIENT = 0xEaA2236C6c998c6520593370dE4195DE23DB159E;
+    address private constant MAINNET_RECEIVER = 0xEaA2236C6c998c6520593370dE4195DE23DB159E;
     address private constant BASE_WETH = 0x4200000000000000000000000000000000000006;
     address private constant BASE_USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
     uint256 private constant WETH_AMOUNT = 0.001 ether;
@@ -38,28 +38,28 @@ contract RevenueBridgerSwapAndBridgeTest is Test {
     function testSwapAndBridgeWithFixtureData() public {
         TokenChwomperMock tokenChwomper = new TokenChwomperMock(BASE_USDC);
         RevenueBridger revenueBridger =
-            new RevenueBridger(OWNER, address(tokenChwomper), MAINNET_RECIPIENT, BASE_USDC, CALL_TARGET);
+            new RevenueBridger(OWNER, address(tokenChwomper), MAINNET_RECEIVER, BASE_USDC, CALL_TARGET, address(0));
 
         _seedChwomper(tokenChwomper);
 
         _deployJumperMock(CALL_TARGET);
 
-        uint256 recipientBalanceBefore = IERC20(BASE_USDC).balanceOf(MAINNET_RECIPIENT);
+        uint256 receiverBalanceBefore = IERC20(BASE_USDC).balanceOf(MAINNET_RECEIVER);
         uint256 chwomperWethBefore = IERC20(BASE_WETH).balanceOf(address(tokenChwomper));
         console.log("Chwomper WETH before swap:", chwomperWethBefore);
-        console.log("Recipient USDC before bridge:", recipientBalanceBefore);
+        console.log("Receiver USDC before bridge:", receiverBalanceBefore);
 
         _executeSwapAndBridge(revenueBridger);
 
         assertEq(IERC20(BASE_USDC).balanceOf(address(revenueBridger)), 0, "USDC should be bridged out");
-        uint256 recipientBalanceAfter = IERC20(BASE_USDC).balanceOf(MAINNET_RECIPIENT);
+        uint256 receiverBalanceAfter = IERC20(BASE_USDC).balanceOf(MAINNET_RECEIVER);
         uint256 chwomperWethAfter = IERC20(BASE_WETH).balanceOf(address(tokenChwomper));
-        uint256 bridgedAmount = recipientBalanceAfter - recipientBalanceBefore;
+        uint256 bridgedAmount = receiverBalanceAfter - receiverBalanceBefore;
         console.log("Chwomper WETH after swap:", chwomperWethAfter);
-        console.log("Recipient USDC after bridge:", recipientBalanceAfter);
+        console.log("Receiver USDC after bridge:", receiverBalanceAfter);
         console.log("Bridged USDC amount:", bridgedAmount);
 
-        assertEq(bridgedAmount, USDC_PAYOUT, "Recipient balance mismatch");
+        assertEq(bridgedAmount, USDC_PAYOUT, "Receiver balance mismatch");
         assertEq(
             chwomperWethBefore - chwomperWethAfter,
             WETH_AMOUNT,
@@ -83,7 +83,7 @@ contract RevenueBridgerSwapAndBridgeTest is Test {
     }
 
     function _deployJumperMock(address callTarget) internal {
-        JumperMock jumper = new JumperMock(BASE_USDC, MAINNET_RECIPIENT);
+        JumperMock jumper = new JumperMock(BASE_USDC, MAINNET_RECEIVER);
         vm.etch(callTarget, address(jumper).code);
     }
 

@@ -32,7 +32,7 @@ contract TokenChwomper is Auth {
     function snwap(
         address tokenIn,
         uint256 amountIn,
-        address recipient,
+        address receiver,
         address tokenOut,
         uint256 amountOutMin,
         address executor,
@@ -40,7 +40,7 @@ contract TokenChwomper is Auth {
     ) external onlyTrusted returns (uint256 amountOut) {
         _safeTransfer(tokenIn, address(redSnwapper), amountIn);
 
-        amountOut = redSnwapper.snwap(tokenIn, 0, recipient, tokenOut, amountOutMin, executor, executorData);
+        amountOut = redSnwapper.snwap(tokenIn, 0, receiver, tokenOut, amountOutMin, executor, executorData);
     }
 
     /// @notice Performs multiple swaps via the configured RedSnwapper

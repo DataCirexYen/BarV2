@@ -7,14 +7,14 @@ import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {FixedPointMathLib} from "solady/utils/FixedPointMathLib.sol";
 import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC20 as IERC20_OZ} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
-
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IRedSnwapper} from "./interfaces/IRedSnwapper.sol";
 import {ITokenChwomper} from "./interfaces/ITokenChwomper.sol";
+import {IReceiverValidator} from "./interfaces/IReceiverValidator.sol";
 
 /**
  * @title RevenueBridger
- * @notice Bridges revenue by swapping tokens through Chwomper and forwarding USDC to a mainnet recipient.
+ * @notice Bridges revenue by swapping tokens through Chwomper and forwarding USDC to a mainnet receiver.
  * @dev OWNER manages configuration and rescues; TRUSTER can only call {swapAndBridge}.
  */
 contract RevenueBridger is OwnableRoles, ReentrancyGuard {
@@ -28,15 +28,19 @@ contract RevenueBridger is OwnableRoles, ReentrancyGuard {
     error RevenueBridger__MissingUsdcOutput();
     error RevenueBridger__InsufficientUsdc(uint256 expected, uint256 actual);
     error RevenueBridger__InvalidCallTarget();
-
+    error RevenueBridger__InvalidValidator();
+    error RevenueBridger__InvalidReceiver();
     /// @dev Role bit for trusted actors permitted to call {swapAndBridge}.
     uint256 internal constant TRUSTER_ROLE = _ROLE_0;
 
     /// @notice Emitted when the contract owner changes.
     event OwnerUpdated(address indexed newOwner);
 
-    /// @notice Emitted when the mainnet revenue recipient changes.
-    event MainnetRecipientUpdated(address indexed newRecipient);
+    /// @notice Emitted when the contract validator changes.
+    event ValidatorUpdated(address indexed newValidator);
+
+    /// @notice Emitted when the mainnet revenue receiver changes.
+    event MainnetReceiverUpdated(address indexed newReceiver);
 
     /// @notice Emitted when the USDC token address changes.
     event UsdcUpdated(address indexed newUsdc);
@@ -47,20 +51,15 @@ contract RevenueBridger is OwnableRoles, ReentrancyGuard {
     /// @notice Emitted when an account's truster role is toggled.
     event TrusterUpdated(address indexed account, bool indexed isTrusted);
 
+
     /// @notice Emitted after USDC is bridged via an external call.
-    event RevenueBridged(
-        address indexed token,
-        uint256 amount,
-        address indexed recipient,
-        address callTarget,
-        bytes callData
-    );
+    event RevenueBridged(address indexed token, uint256 amount, address indexed receiver, address callTarget, bytes callData);
 
     /// @notice Chwomper aggregator responsible for executing swaps.
     ITokenChwomper public immutable chwomper;
 
-    /// @notice Recipient of bridged revenue on the destination chain.
-    address public mainnetRecipient;
+    /// @notice Receiver of bridged revenue on the destination chain.
+    address public mainnetReceiver;
 
     /// @notice USDC token used as the bridge asset.
     address public usdc;
@@ -68,20 +67,25 @@ contract RevenueBridger is OwnableRoles, ReentrancyGuard {
     /// @notice LiFi diamond contract that performs the bridge call.
     address public liFiDiamond;
 
+    /// @notice Validator contract that validates the receiver.
+    IReceiverValidator public validator;
+
     /**
      * @notice Initializes the contract with core configuration.
      * @param _owner Initial contract owner.
      * @param _chwomper Chwomper swapper implementation.
-     * @param _mainnetRecipient Optional initial mainnet recipient.
+     * @param _mainnetReceiver Optional initial mainnet receiver.
      * @param _usdc Optional initial USDC token address.
      * @param _liFiDiamond Optional initial LiFi diamond call target.
+     * @param _validator Optional initial validator contract .
      */
     constructor(
         address _owner,
         address _chwomper,
-        address _mainnetRecipient,
+        address _mainnetReceiver,
         address _usdc,
-        address _liFiDiamond
+        address _liFiDiamond,
+        address _validator
     ) {
         if (_owner == address(0) || _chwomper == address(0)) {
             revert RevenueBridger__InvalidAddress();
@@ -90,8 +94,8 @@ contract RevenueBridger is OwnableRoles, ReentrancyGuard {
         _initializeOwner(_owner);
         chwomper = ITokenChwomper(_chwomper);
 
-        if (_mainnetRecipient != address(0)) {
-            mainnetRecipient = _mainnetRecipient;
+        if (_mainnetReceiver != address(0)) {
+            mainnetReceiver = _mainnetReceiver;
         }
 
         if (_usdc != address(0)) {
@@ -101,6 +105,10 @@ contract RevenueBridger is OwnableRoles, ReentrancyGuard {
         if (_liFiDiamond != address(0)) {
             liFiDiamond = _liFiDiamond;
             emit LiFiDiamondUpdated(_liFiDiamond);
+        }
+        if (_validator != address(0)) {
+            validator = IReceiverValidator(_validator);
+            emit ValidatorUpdated(_validator);
         }
     }
 
@@ -113,15 +121,25 @@ contract RevenueBridger is OwnableRoles, ReentrancyGuard {
         transferOwnership(_newOwner);
         emit OwnerUpdated(_newOwner);
     }
-
+    
     /**
-     * @notice Updates the mainnet revenue recipient.
-     * @param _recipient Address of the new recipient.
+     * @notice Updates the contract validator.
+     * @param _newValidator Address of the new validator.
      */
-    function setMainnetRecipient(address _recipient) external onlyOwner {
-        if (_recipient == address(0)) revert RevenueBridger__InvalidAddress();
-        mainnetRecipient = _recipient;
-        emit MainnetRecipientUpdated(_recipient);
+    function setValidator(address _newValidator) external onlyOwner {
+        if (_newValidator == address(0)) revert RevenueBridger__InvalidValidator();
+        validator = IReceiverValidator(_newValidator);
+        emit ValidatorUpdated(_newValidator);
+    }
+    
+    /**
+     * @notice Updates the mainnet revenue receiver.
+     * @param _receiver Address of the new receiver.
+     */
+    function setMainnetReceiver(address _receiver) external onlyOwner {
+        if (_receiver == address(0)) revert RevenueBridger__InvalidAddress();
+        mainnetReceiver = _receiver;
+        emit MainnetReceiverUpdated(_receiver);
     }
 
     /**
@@ -168,7 +186,7 @@ contract RevenueBridger is OwnableRoles, ReentrancyGuard {
 
     /**
      * @notice Swaps input tokens to USDC through Chwomper and forwards the proceeds.
-     * @dev Callable by OWNER or TRUSTER. Calldata must forward USDC to `mainnetRecipient`.
+     * @dev Callable by OWNER or TRUSTER. Calldata must forward USDC to `mainnetReceiver`.
      */
     function swapAndBridge(
         IRedSnwapper.InputToken[] calldata inputTokens,
@@ -191,7 +209,7 @@ contract RevenueBridger is OwnableRoles, ReentrancyGuard {
         if (callTarget == address(0)) revert RevenueBridger__InvalidAddress();
 
         address usdcToken = usdc;
-        if (usdcToken == address(0) || mainnetRecipient == address(0)) {
+        if (usdcToken == address(0) || mainnetReceiver == address(0)) {
             revert RevenueBridger__InvalidAddress();
         }
 
@@ -200,7 +218,9 @@ contract RevenueBridger is OwnableRoles, ReentrancyGuard {
         }
 
         _validateOutputs(outputTokens, usdcToken);
-
+        if (!validator.validateReceiver(callData)) {
+            revert RevenueBridger__InvalidReceiver();
+        }
         uint256 received = _executeSwap(inputTokens, outputTokens, executors, usdcToken);
         if (received == 0 || received < minUsdcOut) {
             revert RevenueBridger__InsufficientUsdc(minUsdcOut, received);
@@ -216,7 +236,7 @@ contract RevenueBridger is OwnableRoles, ReentrancyGuard {
         (success, result) = callTarget.call{value: nativeValue}(callData);
         if (!success) revert RevenueBridger__ExternalCallFailed(result);
 
-        emit RevenueBridged(usdcToken, received, mainnetRecipient, callTarget, callData);
+        emit RevenueBridged(usdcToken, received, mainnetReceiver, callTarget, callData);
         return result;
     }
 

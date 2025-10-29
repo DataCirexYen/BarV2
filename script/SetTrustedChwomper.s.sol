@@ -15,7 +15,7 @@ contract SetTrustedChwomperScript is Script {
     function run() external {
         uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         address tokenChwomperAddress = vm.envAddress("TOKEN_CHWOMPER_ADDRESS");
-        address trustedAddress = vm.envOr("BRIDGER");
+        address trustedAddress = vm.envOr("TRUSTED_ADDRESS", address(0));
 
         TokenChwomper tokenChwomper = TokenChwomper(payable(tokenChwomperAddress));
 
@@ -32,4 +32,3 @@ contract SetTrustedChwomperScript is Script {
         console2.log("Verification - trusted status:", tokenChwomper.trusted(trustedAddress));
     }
 }
-

@@ -7,7 +7,7 @@ interface ITokenChwomper {
     function snwap(
         address tokenIn,
         uint256 amountIn,
-        address recipient,
+        address receiver,
         address tokenOut,
         uint256 amountOutMin,
         address executor,

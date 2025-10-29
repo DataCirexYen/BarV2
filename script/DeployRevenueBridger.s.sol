@@ -13,10 +13,11 @@ contract DeployRevenueBridgerScript is Script {
     struct DeployConfig {
         address owner;
         address chwomper;
-        address mainnetRecipient;
+        address mainnetReceiver;
         address usdc;
         address liFiDiamond;
         address truster;
+        address receiverValidator;
     }
 
     function run() external returns (RevenueBridger revenueBridger) {
@@ -28,7 +29,14 @@ contract DeployRevenueBridgerScript is Script {
         vm.startBroadcast(deployerKey);
 
         revenueBridger =
-            new RevenueBridger(cfg.owner, cfg.chwomper, cfg.mainnetRecipient, cfg.usdc, cfg.liFiDiamond);
+            new RevenueBridger(
+                cfg.owner,
+                cfg.chwomper,
+                cfg.mainnetReceiver,
+                cfg.usdc,
+                cfg.liFiDiamond,
+                cfg.receiverValidator
+            );
 
         if (cfg.truster != address(0) && cfg.owner == deployer) {
             revenueBridger.setTruster(cfg.truster, true);
@@ -48,12 +56,13 @@ contract DeployRevenueBridgerScript is Script {
     }
 
     function _config() internal view returns (DeployConfig memory cfg) {
-        cfg.owner = vm.envOr("REVENUE_BRIDGER_OWNER");
-        cfg.chwomper = vm.envOr("TOKEN_CHWOMPER_ADDRESS");
-        cfg.mainnetRecipient = vm.envOr("MAINNET_RECIPIENT_ADDR");
-        cfg.usdc = vm.envOr("BASE_USDC_ADDR");
-        cfg.liFiDiamond = vm.envOr("LI_FI_DIAMOND_ADDR");
-        cfg.truster = vm.envOr("REVENUE_BRIDGER_TRUSTER");
+        cfg.owner = vm.envOr("REVENUE_BRIDGER_OWNER", address(0));
+        cfg.chwomper = vm.envOr("TOKEN_CHWOMPER_ADDRESS", address(0));
+        cfg.mainnetReceiver = vm.envOr("MAINNET_RECEIVER_ADDR", address(0));
+        cfg.usdc = vm.envOr("BASE_USDC_ADDR", address(0));
+        cfg.liFiDiamond = vm.envOr("LI_FI_DIAMOND_ADDR", address(0));
+        cfg.truster = vm.envOr("REVENUE_BRIDGER_TRUSTER", address(0));
+        cfg.receiverValidator = vm.envOr("RECEIVER_VALIDATOR_ADDR", address(0));
     }
 
     function _logDeployments(
@@ -63,10 +72,17 @@ contract DeployRevenueBridgerScript is Script {
     ) internal view {
         console2.log("RevenueBridger deployed at:", address(revenueBridger));
         console2.log("RevenueBridger owner:", cfg.owner);
-        console2.log("Mainnet recipient:", cfg.mainnetRecipient);
+        console2.log("Mainnet receiver:", cfg.mainnetReceiver);
         console2.log("TokenChwomper:", cfg.chwomper);
         console2.log("USDC token:", cfg.usdc);
         console2.log("LiFi diamond:", cfg.liFiDiamond);
+        console2.log("Receiver validator:", cfg.receiverValidator);
         console2.log("Configured truster:", trusterConfigured ? cfg.truster : address(0));
+
+        if (cfg.receiverValidator == address(0)) {
+            console2.log(
+                "WARNING: Receiver validator not provided. Owner must set validator manually via setValidator()."
+            );
+        }
     }
 }
