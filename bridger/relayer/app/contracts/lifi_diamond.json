@@ -1,0 +1,185 @@
+[
+  {
+    "type": "function",
+    "name": "swapAndStartBridgeTokensViaStargate",
+    "stateMutability": "payable",
+    "inputs": [
+      {
+        "name": "_bridgeData",
+        "type": "tuple",
+        "internalType": "struct ILiFi.BridgeData",
+        "components": [
+          {
+            "name": "transactionId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "bridge",
+            "type": "string",
+            "internalType": "string"
+          },
+          {
+            "name": "integrator",
+            "type": "string",
+            "internalType": "string"
+          },
+          {
+            "name": "referrer",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "sendingAssetId",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "receiver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "minAmount",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "destinationChainId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "hasSourceSwaps",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "hasDestinationCall",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ]
+      },
+      {
+        "name": "_swapData",
+        "type": "tuple[]",
+        "internalType": "struct LibSwap.SwapData[]",
+        "components": [
+          {
+            "name": "callTo",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "approveTo",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "sendingAssetId",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "receivingAssetId",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "fromAmount",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "callData",
+            "type": "bytes",
+            "internalType": "bytes"
+          },
+          {
+            "name": "requiresDeposit",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ]
+      },
+      {
+        "name": "_stargateData",
+        "type": "tuple",
+        "internalType": "struct StargateFacet.StargateData",
+        "components": [
+          {
+            "name": "assetId",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "sendParams",
+            "type": "tuple",
+            "internalType": "struct StargateFacet.SendParams",
+            "components": [
+              {
+                "name": "dstEid",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "to",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "amountLD",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "minAmountLD",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "extraOptions",
+                "type": "bytes",
+                "internalType": "bytes"
+              },
+              {
+                "name": "composeMsg",
+                "type": "bytes",
+                "internalType": "bytes"
+              },
+              {
+                "name": "oftCmd",
+                "type": "bytes",
+                "internalType": "bytes"
+              }
+            ]
+          },
+          {
+            "name": "fee",
+            "type": "tuple",
+            "internalType": "struct IStargate.Fee",
+            "components": [
+              {
+                "name": "nativeFee",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "lzTokenFee",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "refundAddress",
+            "type": "address",
+            "internalType": "address"
+          }
+        ]
+      }
+    ],
+    "outputs": []
+  }
+]

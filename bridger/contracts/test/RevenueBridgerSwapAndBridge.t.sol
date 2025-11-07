@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "forge-std/Test.sol";
+import "forge-std/console.sol";
+
+import {RevenueBridger} from "../src/revenueBridger.sol";
+import {IRedSnwapper} from "../src/interfaces/IRedSnwapper.sol";
+import {IERC20} from "../src/interfaces/IERC20.sol";
+import {TokenChwomperMock} from "./mocks/TokenChwomperMock.sol";
+import {JumperMock} from "./mocks/JumperMock.sol";
+import {ReceiverValidator} from "../src/receiverValidator.sol";
+
+contract RevenueBridgerSwapAndBridgeTest is Test {
+    address private constant OWNER = 0xb2cc224c1c9feE385f8ad6a55b4d94E92359DC59;
+    address private constant MAINNET_RECEIVER = 0xEaA2236C6c998c6520593370dE4195DE23DB159E;
+    address private constant BASE_WETH = 0x4200000000000000000000000000000000000006;
+    address private constant BASE_USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
+    uint256 private constant WETH_AMOUNT = 0.001 ether;
+    uint256 private constant USDC_PAYOUT = 1_000_000; // 1 USDC (6 decimals)
+    uint256 private constant SUSHI_BLOCK_NUMBER = 37_226_042;
+
+    address private constant SUSHI_EXECUTOR = 0xd2b37aDE14708bf18904047b1E31F8166d39612b;
+    bytes private constant SUSHI_EXECUTOR_DATA =
+        hex"6be92b89000000000000000000000000420000000000000000000000000000000000000600000000000000000000000000000000000000000000000000038d7ea4c68000000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda0291300000000000000000000000000000000000000000000000000000000003bbd0d000000000000000000000000eaa2236c6c998c6520593370de4195de23db159e0000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000051019a122b7d00000101420000000000000000000000000000000000000601ffff0156c8989222ed293e3c4a22628d8bca633ce1eb9901d2b37ade14708bf18904047b1e31f8166d39612b00e36022eef406000000000000000000000000000000";
+
+    address private constant CALL_TARGET = 0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE;
+    bytes private constant JUMPER_CALL_DATA =
+        hex"1794958f000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000002200000000000000000000000000000000000000000000000000000000000000400d3d18d170bf0e228665c289ded41108610eafac7d11ec9283d3e37ab819cc7ee000000000000000000000000000000000000000000000000000000000000014000000000000000000000000000000000000000000000000000000000000001800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda02913000000000000000000000000eaa2236c6c998c6520593370de4195de23db159e00000000000000000000000000000000000000000000000000000000000f387c00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000066163726f7373000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000086c6966692d617069000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000200000000000000000000000000a6d96e7f4d7b96cfe42185df61e64d255c12dff0000000000000000000000000a6d96e7f4d7b96cfe42185df61e64d255c12dff000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda02913000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda0291300000000000000000000000000000000000000000000000000000000000f424000000000000000000000000000000000000000000000000000000000000000e000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000084eedd56e1000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda02913000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000009c4000000000000000000000000b9c0de368bece5e76b52545a8e377a4c118f597b00000000000000000000000000000000000000000000000000000000000000000000000000000000eaa2236c6c998c6520593370de4195de23db159e000000000000000000000000b2cc224c1c9fee385f8ad6a55b4d94e92359dc59000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda02913000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4800000000000000000000000000000000000000000000000000000000000d1eea0000000000000000000000000000000000000000000000000bf6922b277dbd4600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000068fa683f0000000000000000000000000000000000000000000000000000000068fa8c7e000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001600000000000000000000000000000000000000000000000000000000000000000";
+    uint256 private constant NATIVE_VALUE = 0;
+
+    string private constant BASE_RPC_ENV = "BASE_RPC_URL";
+
+    function setUp() public {
+        string memory rpcUrl = vm.envString(BASE_RPC_ENV);
+        vm.createSelectFork(rpcUrl, SUSHI_BLOCK_NUMBER);
+    }
+
+    function testSwapAndBridgeWithFixtureData() public {
+        TokenChwomperMock tokenChwomper = new TokenChwomperMock(BASE_USDC);
+        RevenueBridger revenueBridger =
+            new RevenueBridger(OWNER, address(tokenChwomper), MAINNET_RECEIVER, BASE_USDC, CALL_TARGET, address(0));
+
+        _seedChwomper(tokenChwomper);
+
+        _configureReceiverValidator(revenueBridger);
+
+        _deployJumperMock(CALL_TARGET);
+
+        uint256 receiverBalanceBefore = IERC20(BASE_USDC).balanceOf(MAINNET_RECEIVER);
+        uint256 chwomperWethBefore = IERC20(BASE_WETH).balanceOf(address(tokenChwomper));
+        console.log("Chwomper WETH before swap:", chwomperWethBefore);
+        console.log("Receiver USDC before bridge:", receiverBalanceBefore);
+
+        _executeSwapAndBridge(revenueBridger);
+
+        assertEq(IERC20(BASE_USDC).balanceOf(address(revenueBridger)), 0, "USDC should be bridged out");
+        uint256 receiverBalanceAfter = IERC20(BASE_USDC).balanceOf(MAINNET_RECEIVER);
+        uint256 chwomperWethAfter = IERC20(BASE_WETH).balanceOf(address(tokenChwomper));
+        uint256 bridgedAmount = receiverBalanceAfter - receiverBalanceBefore;
+        console.log("Chwomper WETH after swap:", chwomperWethAfter);
+        console.log("Receiver USDC after bridge:", receiverBalanceAfter);
+        console.log("Bridged USDC amount:", bridgedAmount);
+
+        assertEq(bridgedAmount, USDC_PAYOUT, "Receiver balance mismatch");
+        assertEq(
+            chwomperWethBefore - chwomperWethAfter,
+            WETH_AMOUNT,
+            "Chwomper should spend WETH"
+        );
+        // USDC decreases allowance on transferFrom, so expect max minus the bridged amount.
+        assertEq(
+            IERC20(BASE_USDC).allowance(address(revenueBridger), CALL_TARGET),
+            type(uint256).max - USDC_PAYOUT,
+            "Allowance should account for spend"
+        );
+    }
+
+    function _seedChwomper(TokenChwomperMock tokenChwomper) internal {
+        uint256[] memory mockOutputs = new uint256[](1);
+        mockOutputs[0] = USDC_PAYOUT;
+        tokenChwomper.setNextAmountsOut(mockOutputs);
+        tokenChwomper.setExpectedInputReduction(WETH_AMOUNT);
+        deal(BASE_USDC, address(tokenChwomper), USDC_PAYOUT);
+        deal(BASE_WETH, address(tokenChwomper), WETH_AMOUNT);
+    }
+
+    function _deployJumperMock(address callTarget) internal {
+        JumperMock jumper = new JumperMock(BASE_USDC, MAINNET_RECEIVER);
+        vm.etch(callTarget, address(jumper).code);
+    }
+
+    function _executeSwapAndBridge(RevenueBridger revenueBridger) internal {
+        IRedSnwapper.InputToken[] memory inputTokens = new IRedSnwapper.InputToken[](1);
+        inputTokens[0] = IRedSnwapper.InputToken({token: BASE_WETH, amountIn: WETH_AMOUNT, transferTo: SUSHI_EXECUTOR});
+
+        IRedSnwapper.OutputToken[] memory outputTokens = new IRedSnwapper.OutputToken[](1);
+        outputTokens[0] = IRedSnwapper.OutputToken({
+            token: BASE_USDC,
+            recipient: address(revenueBridger),
+            amountOutMin: USDC_PAYOUT
+        });
+
+        IRedSnwapper.Executor[] memory executors = new IRedSnwapper.Executor[](1);
+        executors[0] = IRedSnwapper.Executor({executor: SUSHI_EXECUTOR, value: 0, data: SUSHI_EXECUTOR_DATA});
+
+        vm.expectCall(CALL_TARGET, NATIVE_VALUE, JUMPER_CALL_DATA);
+
+        vm.prank(OWNER);
+        revenueBridger.swapAndBridge(inputTokens, outputTokens, executors, USDC_PAYOUT, CALL_TARGET, JUMPER_CALL_DATA, NATIVE_VALUE);
+    }
+
+    function _configureReceiverValidator(RevenueBridger revenueBridger) internal {
+        ReceiverValidator validator = new ReceiverValidator(MAINNET_RECEIVER);
+        vm.prank(OWNER);
+        revenueBridger.setValidator(address(validator));
+    }
+}

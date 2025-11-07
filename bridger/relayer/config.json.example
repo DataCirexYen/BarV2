@@ -1,0 +1,41 @@
+{
+  "contracts": {
+    "base": {
+      "chwmper_address": "<INSERT_CHWMPER_CONTRACT_ADDRESS>",
+      "revenue_bridger_address": "<INSERT_REVENUE_BRIDGER_CONTRACT_ADDRESS>",
+      "redsnwapper_address": "<INSERT_REDSNWAPPER_CONTRACT_ADDRESS>",
+      "lifi_diamond_address": "<INSERT_LIFI_DIAMOND_CONTRACT_ADDRESS>",
+      "usdc_address": "<INSERT_USDC_CONTRACT_ADDRESS>",
+      "whitelisted_tokens": {
+        "SUSHI": "<INSERT_SUSHI_TOKEN_ADDRESS>",
+        "WETH": "<INSERT_WETH_TOKEN_ADDRESS>"
+      }
+    },
+    "ethereum": {
+      "usdc_address": "<INSERT_MAINNET_USDC_ADDRESS>"
+    }
+  },
+  "addresses": {
+    "mainnet_recipient": "<INSERT_MAINNET_RECIPIENT_ADDRESS>"
+  },
+  "chains": {
+    "base": {
+      "chain_id": 8453,
+      "rpc_url": "<INSERT_BASE_RPC_URL>"
+    },
+    "ethereum": {
+      "chain_id": 1
+    }
+  },
+  "defaults": {
+    "bridge_usdc_amount": 0.2,
+    "usdc_threshold": 200000,
+    "max_slippage": 0.005,
+    "slippage_tolerance": 0.995,
+    "api_timeout": 30
+  },
+  "api_urls": {
+    "sushi_swap_base": "<INSERT_SUSHI_API_URL>",
+    "lifi_quote": "<INSERT_LIFI_QUOTE_API_URL>"
+  }
+}

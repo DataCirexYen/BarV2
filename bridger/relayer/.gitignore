@@ -1,0 +1,29 @@
+# Ignore local configuration and secrets
+config.json
+.env
+
+# Python virtual environments
+venv/
+.venv/
+ENV/
+env/
+
+# VSCode and PyCharm project files
+.vscode/
+.idea/
+
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Misc
+main:app
+
+# Ignore pip dependency logs
+pip-log.txt
+pip-delete-this-directory.txt
