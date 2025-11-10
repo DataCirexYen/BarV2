@@ -63,10 +63,9 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
     address public rewardSource;
     uint256 public rewardDust;
 
-    uint256 public constant HALF_HOUR = 30 minutes;
     uint256 private constant ONE_DAY = 1 days;
     uint256 private constant ONE_WEEK = 7 days;
-    uint256 private constant ONE_MONTH = 30 days;
+    uint256 private constant ONE_MONTH = 4 * ONE_WEEK;
     uint256 private constant PRECISION = 1e18;
 
     /// -----------------------------------------------------------------------
@@ -108,13 +107,21 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
         navPerTier[LockPeriod.OneWeek] = PRECISION;
         navPerTier[LockPeriod.OneMonth] = PRECISION;
 
-        uint256 currentSlot = (block.timestamp / ONE_WEEK) * ONE_WEEK;
-        _lastExpiredSlotUpdated[LockPeriod.OneDay] = currentSlot;
-        _lastExpiredSlotUpdated[LockPeriod.OneWeek] = currentSlot;
-        _lastExpiredSlotUpdated[LockPeriod.OneMonth] = currentSlot;
-        cumulativeExpiredSharesAtSlot[LockPeriod.OneDay][currentSlot] = 0;
-        cumulativeExpiredSharesAtSlot[LockPeriod.OneWeek][currentSlot] = 0;
-        cumulativeExpiredSharesAtSlot[LockPeriod.OneMonth][currentSlot] = 0;
+        uint256 daySlot = _floorToSlot(LockPeriod.OneDay, block.timestamp);
+        uint256 weekSlot = _floorToSlot(LockPeriod.OneWeek, block.timestamp);
+        uint256 monthSlot = _floorToSlot(LockPeriod.OneMonth, block.timestamp);
+
+        _lastExpiredSlotUpdated[LockPeriod.OneDay] = daySlot;
+        _lastExpiredSlotUpdated[LockPeriod.OneWeek] = weekSlot;
+        _lastExpiredSlotUpdated[LockPeriod.OneMonth] = monthSlot;
+
+        cumulativeExpiredSharesAtSlot[LockPeriod.OneDay][daySlot] = 0;
+        cumulativeExpiredSharesAtSlot[LockPeriod.OneWeek][weekSlot] = 0;
+        cumulativeExpiredSharesAtSlot[LockPeriod.OneMonth][monthSlot] = 0;
+
+        _ensureNavCheckpoint(LockPeriod.OneDay, daySlot, PRECISION);
+        _ensureNavCheckpoint(LockPeriod.OneWeek, weekSlot, PRECISION);
+        _ensureNavCheckpoint(LockPeriod.OneMonth, monthSlot, PRECISION);
     }
 
     /// -----------------------------------------------------------------------
@@ -132,10 +139,9 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
             revert InvalidAmount();
         }
 
-        uint256 lockDuration = _lockDuration(lockPeriod);
         uint256 start = block.timestamp;
 
-        uint256 unlockTime = ((block.timestamp + lockDuration) / ONE_WEEK) * ONE_WEEK; // Locktime is rounded down to weeks
+        uint256 unlockTime = _ceilToSlot(lockPeriod, block.timestamp);
 
         tokenId = ++nextTokenId;
 
@@ -182,18 +188,15 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
             revert UnlockNotReached(position.unlockTimestamp, currentTimestamp);
         }
 
-        _realizeExpiredSharesUpTo(position.lockPeriod, position.unlockTimestamp);
+        uint256 unlockSlot = _floorToSlot(position.lockPeriod, position.unlockTimestamp);
+        _realizeExpiredSharesUpTo(position.lockPeriod, unlockSlot);
         // Use NAV at or before unlock, and cache it at the unlock slot if missing
-        uint256 navAtUnlock = _navAtOrBefore(position.lockPeriod, position.unlockTimestamp);
-        // Pin checkpoint at unlock slot to the final resolved NAV
-
-        //TODO: maybe add the  navPerTierAtSlot[position.lockPeriod][position.unlockTimestamp]  to the _navAtOrBefore?
-        
-        navPerTierAtSlot[position.lockPeriod][normalizeSlot(position.unlockTimestamp)] = navAtUnlock;
+        uint256 navAtUnlock = _navAtOrBefore(position.lockPeriod, unlockSlot);
+        _ensureNavCheckpoint(position.lockPeriod, unlockSlot, navAtUnlock);
 
         totalSharesPerTier[position.lockPeriod] -= position.sharesAmount;
 
-        uint256 expiredForSlot = expiredSharesAtSlot[position.lockPeriod][position.unlockTimestamp];
+        uint256 expiredForSlot = expiredSharesAtSlot[position.lockPeriod][unlockSlot];
 
 
         if (expiredForSlot != 0) {
@@ -202,11 +205,10 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
                 amountToRemove = expiredForSlot;
             }
             cumulativeExpiredShares[position.lockPeriod] -= amountToRemove;
-            cumulativeExpiredSharesAtSlot[position.lockPeriod][position.unlockTimestamp] =
-                cumulativeExpiredShares[position.lockPeriod];
-            expiredSharesAtSlot[position.lockPeriod][position.unlockTimestamp] = expiredForSlot - amountToRemove;
-            if (_lastExpiredSlotUpdated[position.lockPeriod] > position.unlockTimestamp) {
-                _lastExpiredSlotUpdated[position.lockPeriod] = position.unlockTimestamp;
+            cumulativeExpiredSharesAtSlot[position.lockPeriod][unlockSlot] = cumulativeExpiredShares[position.lockPeriod];
+            expiredSharesAtSlot[position.lockPeriod][unlockSlot] = expiredForSlot - amountToRemove;
+            if (_lastExpiredSlotUpdated[position.lockPeriod] > unlockSlot) {
+                _lastExpiredSlotUpdated[position.lockPeriod] = unlockSlot;
             }
         }
 
@@ -232,10 +234,13 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
             revert RewardSourceNotSet();
         }
 
-        uint256 currentSlot = (block.timestamp / ONE_WEEK) * ONE_WEEK;
-        uint256 dayShares = _activeSharesForSlot(LockPeriod.OneDay, currentSlot);
-        uint256 weekShares = _activeSharesForSlot(LockPeriod.OneWeek, currentSlot);
-        uint256 monthShares = _activeSharesForSlot(LockPeriod.OneMonth, currentSlot);
+        uint256 daySlot = _floorToSlot(LockPeriod.OneDay, block.timestamp);
+        uint256 weekSlot = _floorToSlot(LockPeriod.OneWeek, block.timestamp);
+        uint256 monthSlot = _floorToSlot(LockPeriod.OneMonth, block.timestamp);
+
+        uint256 dayShares = _activeSharesForSlot(LockPeriod.OneDay, daySlot);
+        uint256 weekShares = _activeSharesForSlot(LockPeriod.OneWeek, weekSlot);
+        uint256 monthShares = _activeSharesForSlot(LockPeriod.OneMonth, monthSlot);
 
         uint256 activeShares = dayShares + weekShares + monthShares;
         if (activeShares == 0) {
@@ -252,7 +257,7 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
             uint256 dayReward = Math.mulDiv(totalReward, dayShares, activeShares);
             dayNavDelta = Math.mulDiv(dayReward, PRECISION, dayShares);
             navPerTier[LockPeriod.OneDay] += dayNavDelta;
-            _recordNavOnDistribution(LockPeriod.OneDay, currentSlot);
+            _recordNavOnDistribution(LockPeriod.OneDay, daySlot);
             distributed += dayReward;
         }
 
@@ -261,7 +266,7 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
             uint256 weekReward = Math.mulDiv(totalReward, weekShares, activeShares);
             weekNavDelta = Math.mulDiv(weekReward, PRECISION, weekShares);
             navPerTier[LockPeriod.OneWeek] += weekNavDelta;
-            _recordNavOnDistribution(LockPeriod.OneWeek, currentSlot);
+            _recordNavOnDistribution(LockPeriod.OneWeek, weekSlot);
             distributed += weekReward;
         }
 
@@ -270,7 +275,7 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
             uint256 monthReward = Math.mulDiv(totalReward, monthShares, activeShares);
             monthNavDelta = Math.mulDiv(monthReward, PRECISION, monthShares);
             navPerTier[LockPeriod.OneMonth] += monthNavDelta;
-            _recordNavOnDistribution(LockPeriod.OneMonth, currentSlot);
+            _recordNavOnDistribution(LockPeriod.OneMonth, monthSlot);
             distributed += monthReward;
         }
 
@@ -278,12 +283,12 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
 
         // Ensure a checkpoint exists for every tier at this slot,
         // even if a given tier received zero delta this round.
-        _recordNavOnDistribution(LockPeriod.OneDay, currentSlot);
-        _recordNavOnDistribution(LockPeriod.OneWeek, currentSlot);
-        _recordNavOnDistribution(LockPeriod.OneMonth, currentSlot);
+        _recordNavOnDistribution(LockPeriod.OneDay, daySlot);
+        _recordNavOnDistribution(LockPeriod.OneWeek, weekSlot);
+        _recordNavOnDistribution(LockPeriod.OneMonth, monthSlot);
 
         emit RewardsDistributed(
-            msg.sender, amount, totalReward, currentSlot, dayNavDelta, weekNavDelta, monthNavDelta, rewardDust
+            msg.sender, amount, totalReward, weekSlot, dayNavDelta, weekNavDelta, monthNavDelta, rewardDust
         );
     }
 
@@ -331,7 +336,7 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
     /// Internal logic
     /// -----------------------------------------------------------------------
 
-    function _lockDuration(LockPeriod lockPeriod) private pure returns (uint256 duration) {
+    function _slotSize(LockPeriod lockPeriod) private pure returns (uint256) {
         if (lockPeriod == LockPeriod.OneDay) {
             return ONE_DAY;
         }
@@ -344,27 +349,40 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
         revert InvalidLockPeriod();
     }
 
-    function _recordNavOnDistribution(LockPeriod lockPeriod, uint256 slot) private {
-        uint256 currentNav = navPerTier[lockPeriod];
-        uint256 storedNav = navPerTierAtSlot[lockPeriod][slot];
-        if (storedNav != currentNav) {
-            navPerTierAtSlot[lockPeriod][slot] = currentNav;
+    function _floorToSlot(LockPeriod lockPeriod, uint256 timestamp) private pure returns (uint256) {
+        uint256 size = _slotSize(lockPeriod);
+        return (timestamp / size) * size;
+    }
+
+    function _ceilToSlot(LockPeriod lockPeriod, uint256 timestamp) private pure returns (uint256) {
+        uint256 size = _slotSize(lockPeriod);
+        uint256 slot = ((timestamp + size - 1) / size) * size;
+        if (slot == timestamp) {
+            slot += size;
         }
+        return slot;
+    }
+
+    function _ensureNavCheckpoint(LockPeriod lockPeriod, uint256 slot, uint256 navValue) private {
+        if (navPerTierAtSlot[lockPeriod][slot] != 0) {
+            return;
+        }
+        navPerTierAtSlot[lockPeriod][slot] = navValue;
         uint256[] storage slots = _navSlots[lockPeriod];
         uint256 len = slots.length;
-        if (len == 0 || slots[len - 1] != slot) {
-            // record only once per slot; slots are monotonic by time in distributeRewards
+        if (len == 0 || slots[len - 1] < slot) {
             slots.push(slot);
         }
     }
 
-    function normalizeSlot(uint256 slot) private pure returns (uint256) {
-        return (slot / HALF_HOUR) * HALF_HOUR;
+    function _recordNavOnDistribution(LockPeriod lockPeriod, uint256 slot) private {
+        uint256 nextSlot = slot + _slotSize(lockPeriod);
+        _ensureNavCheckpoint(lockPeriod, nextSlot, navPerTier[lockPeriod]);
     }
 
     function _navAtOrBefore(LockPeriod lockPeriod, uint256 slot) private view returns (uint256) {
         // exact match fast-path
-        slot = normalizeSlot(slot);
+        slot = _floorToSlot(lockPeriod, slot);
         uint256 exact = navPerTierAtSlot[lockPeriod][slot];
         if (exact != 0) return exact;
         return _fallbackNavAtOrBefore(lockPeriod, slot);
@@ -372,7 +390,7 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
 
     // Fallback resolution: find NAV at the latest recorded distribution slot <= target slot
     function _fallbackNavAtOrBefore(LockPeriod lockPeriod, uint256 slot) private view returns (uint256) {
-        slot = normalizeSlot(slot);
+        slot = _floorToSlot(lockPeriod, slot);
         uint256[] storage slots = _navSlots[lockPeriod];
         uint256 len = slots.length;
         if (len == 0) {
@@ -402,30 +420,35 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
     }
 
     function _realizeExpiredSharesUpTo(LockPeriod lockPeriod, uint256 slot) private {
+        uint256 targetSlot = _floorToSlot(lockPeriod, slot);
         uint256 lastSlot = _lastExpiredSlotUpdated[lockPeriod];
         uint256 cumulative = cumulativeExpiredShares[lockPeriod];
 
-        if (slot <= lastSlot) {
-            cumulativeExpiredSharesAtSlot[lockPeriod][slot] = cumulative;
+        if (targetSlot <= lastSlot) {
+            cumulativeExpiredSharesAtSlot[lockPeriod][targetSlot] = cumulative;
+            _ensureNavCheckpoint(lockPeriod, targetSlot, navPerTier[lockPeriod]);
             return;
         }
 
+        uint256 size = _slotSize(lockPeriod);
         uint256 current = lastSlot;
-        while (current < slot) {
-            current += ONE_WEEK;
+        while (current < targetSlot) {
+            current += size;
             cumulative += expiredSharesAtSlot[lockPeriod][current];
             cumulativeExpiredSharesAtSlot[lockPeriod][current] = cumulative;
+            _ensureNavCheckpoint(lockPeriod, current, navPerTier[lockPeriod]);
         }
 
         cumulativeExpiredShares[lockPeriod] = cumulative;
-        _lastExpiredSlotUpdated[lockPeriod] = slot;
+        _lastExpiredSlotUpdated[lockPeriod] = targetSlot;
     }
 
     function _activeSharesForSlot(LockPeriod lockPeriod, uint256 slot) private returns (uint256) {
-        _realizeExpiredSharesUpTo(lockPeriod, slot);
+        uint256 normalizedSlot = _floorToSlot(lockPeriod, slot);
+        _realizeExpiredSharesUpTo(lockPeriod, normalizedSlot);
 
         uint256 total = totalSharesPerTier[lockPeriod];
-        uint256 expired = cumulativeExpiredSharesAtSlot[lockPeriod][slot];
+        uint256 expired = cumulativeExpiredSharesAtSlot[lockPeriod][normalizedSlot];
         if (total > expired) {
             return total - expired;
         }

@@ -1,0 +1,6 @@
+[submodule "staking/contracts/lib/forge-std"]
+	path = staking/contracts/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "staking/contracts/lib/openzeppelin-contracts"]
+	path = staking/contracts/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts
