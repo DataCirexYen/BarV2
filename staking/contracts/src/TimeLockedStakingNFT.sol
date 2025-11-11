@@ -60,6 +60,7 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
     mapping(LockPeriod => uint256) public cumulativeExpiredShares;
     mapping(LockPeriod => mapping(uint256 => uint256)) public cumulativeExpiredSharesAtSlot;
     mapping(LockPeriod => uint256) private _lastExpiredSlotUpdated;
+    mapping(LockPeriod => uint256) public boostFactorPerTier;
     address public rewardSource;
     uint256 public rewardDust;
 
@@ -83,6 +84,7 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
 
     event Withdrawn(address indexed owner, uint256 indexed tokenId, uint256 amount);
     event RewardSourceUpdated(address indexed newRewardSource);
+    event BoostFactorPerTierUpdated(LockPeriod indexed lockPeriod, uint256 indexed boostFactor);
     event RewardsDistributed(
         address indexed caller,
         uint256 amountPulled,
@@ -98,7 +100,7 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
     /// Constructor
     /// -----------------------------------------------------------------------
 
-    constructor(IERC20 stakingToken_) ERC721("Time Locked Staking Position", "TLS") Ownable(msg.sender) {
+    constructor(IERC20 stakingToken_, uint256[] memory boostFactorPerTier_) ERC721("Time Locked Staking Position", "TLS") Ownable(msg.sender) {
         if (address(stakingToken_) == address(0)) {
             revert ZeroAddress();
         }
@@ -106,6 +108,9 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
         navPerTier[LockPeriod.OneDay] = PRECISION;
         navPerTier[LockPeriod.OneWeek] = PRECISION;
         navPerTier[LockPeriod.OneMonth] = PRECISION;
+        boostFactorPerTier[LockPeriod.OneDay] = boostFactorPerTier_[0];
+        boostFactorPerTier[LockPeriod.OneWeek] = boostFactorPerTier_[1];
+        boostFactorPerTier[LockPeriod.OneMonth] = boostFactorPerTier_[2];
 
         uint256 daySlot = _floorToSlot(LockPeriod.OneDay, block.timestamp);
         uint256 weekSlot = _floorToSlot(LockPeriod.OneWeek, block.timestamp);
@@ -242,7 +247,11 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
         uint256 weekShares = _activeSharesForSlot(LockPeriod.OneWeek, weekSlot);
         uint256 monthShares = _activeSharesForSlot(LockPeriod.OneMonth, monthSlot);
 
-        uint256 activeShares = dayShares + weekShares + monthShares;
+        uint256 dayBoostFactor = boostFactorPerTier[LockPeriod.OneDay];
+        uint256 weekBoostFactor = boostFactorPerTier[LockPeriod.OneWeek];
+        uint256 monthBoostFactor = boostFactorPerTier[LockPeriod.OneMonth];
+
+        uint256 activeShares = dayShares * dayBoostFactor + weekShares * weekBoostFactor + monthShares * monthBoostFactor;
         if (activeShares == 0) {
             revert NoActiveShares();
         }
@@ -254,7 +263,7 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
 
         uint256 dayNavDelta;
         if (dayShares != 0) {
-            uint256 dayReward = Math.mulDiv(totalReward, dayShares, activeShares);
+            uint256 dayReward = Math.mulDiv(totalReward, dayShares * dayBoostFactor, activeShares);
             dayNavDelta = Math.mulDiv(dayReward, PRECISION, dayShares);
             navPerTier[LockPeriod.OneDay] += dayNavDelta;
             _recordNavOnDistribution(LockPeriod.OneDay, daySlot);
@@ -263,7 +272,7 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
 
         uint256 weekNavDelta;
         if (weekShares != 0) {
-            uint256 weekReward = Math.mulDiv(totalReward, weekShares, activeShares);
+            uint256 weekReward = Math.mulDiv(totalReward, weekShares * weekBoostFactor, activeShares);
             weekNavDelta = Math.mulDiv(weekReward, PRECISION, weekShares);
             navPerTier[LockPeriod.OneWeek] += weekNavDelta;
             _recordNavOnDistribution(LockPeriod.OneWeek, weekSlot);
@@ -272,7 +281,7 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
 
         uint256 monthNavDelta;
         if (monthShares != 0) {
-            uint256 monthReward = Math.mulDiv(totalReward, monthShares, activeShares);
+            uint256 monthReward = Math.mulDiv(totalReward, monthShares * monthBoostFactor, activeShares);
             monthNavDelta = Math.mulDiv(monthReward, PRECISION, monthShares);
             navPerTier[LockPeriod.OneMonth] += monthNavDelta;
             _recordNavOnDistribution(LockPeriod.OneMonth, monthSlot);
@@ -300,7 +309,10 @@ contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
         rewardSource = newRewardSource;
         emit RewardSourceUpdated(newRewardSource);
     }
-
+    function setBoostFactorPerTier(LockPeriod lockPeriod, uint256 boostFactor) external onlyOwner {
+        boostFactorPerTier[lockPeriod] = boostFactor;
+        emit BoostFactorPerTierUpdated(lockPeriod, boostFactor);
+    }
     /// -----------------------------------------------------------------------
     /// View helpers
     /// -----------------------------------------------------------------------

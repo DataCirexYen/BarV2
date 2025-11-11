@@ -26,6 +26,9 @@ abstract contract BaseComplexSetup is Test {
     RewardSource internal rewardSource;
 
     uint256 internal constant PRECISION = 1e18;
+    uint256 internal constant DAY_BOOST = 100;
+    uint256 internal constant WEEK_BOOST = 105;
+    uint256 internal constant MONTH_BOOST = 110;
 
     address internal constant ALICE = address(0xA11CE);
     address internal constant BOB = address(0xB0B);
@@ -50,7 +53,7 @@ abstract contract BaseComplexSetup is Test {
 
     function setUp() public virtual {
         token = new MockRewardToken();
-        staking = new TimeLockedStakingNFT(token);
+        staking = new TimeLockedStakingNFT(token, _defaultBoostFactors());
         rewardSource = new RewardSource(token);
 
         staking.setRewardSource(address(rewardSource));
@@ -122,5 +125,12 @@ abstract contract BaseComplexSetup is Test {
             slot += size;
         }
         return slot;
+    }
+
+    function _defaultBoostFactors() internal pure returns (uint256[] memory factors) {
+        factors = new uint256[](3);
+        factors[0] = DAY_BOOST;
+        factors[1] = WEEK_BOOST;
+        factors[2] = MONTH_BOOST;
     }
 }

@@ -21,10 +21,14 @@ contract TimeLockedStakingNFTTest is Test, IERC721Receiver {
     MockToken internal token;
     TimeLockedStakingNFT internal staking;
     RewardSource internal rewardSource;
+    uint256 internal constant PRECISION = 1e18;
+    uint256 internal constant DAY_BOOST = 100; // baseline 1.00x
+    uint256 internal constant WEEK_BOOST = 105; // 1.05x relative weight
+    uint256 internal constant MONTH_BOOST = 110; // 1.10x relative weight
 
     function setUp() public {
         token = new MockToken();
-        staking = new TimeLockedStakingNFT(token);
+        staking = new TimeLockedStakingNFT(token, _defaultBoostFactors());
         rewardSource = new RewardSource(token);
         staking.setRewardSource(address(rewardSource));
         vm.warp(1 weeks - 1 days);
@@ -59,9 +63,7 @@ contract TimeLockedStakingNFTTest is Test, IERC721Receiver {
         assertEq(position.startTimestamp, block.timestamp);
         uint256 expectedSlot = _nextSlot(block.timestamp, 1 weeks);
         assertEq(position.unlockTimestamp, expectedSlot);
-
-
-        assertEq(position.entryNav, 1e18);
+        assertEq(position.entryNav, PRECISION);
         assertEq(staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), amount);
     }
 
@@ -119,19 +121,23 @@ contract TimeLockedStakingNFTTest is Test, IERC721Receiver {
     }
 
     function testDistributeRewardsAccruesNavAndPayouts() public {
-        uint256 dayTokenId = staking.deposit(100 ether, TimeLockedStakingNFT.LockPeriod.OneDay);
-        uint256 weekTokenId = staking.deposit(200 ether, TimeLockedStakingNFT.LockPeriod.OneWeek);
-        uint256 monthTokenId = staking.deposit(300 ether, TimeLockedStakingNFT.LockPeriod.OneMonth);
+        uint256 dayAmount = 100 ether;
+        uint256 weekAmount = 200 ether;
+        uint256 monthAmount = 300 ether;
 
-        uint256 totalShares = 100 ether + 200 ether + 300 ether;
-        token.mint(address(rewardSource), 300 ether);
+        uint256 dayTokenId = staking.deposit(dayAmount, TimeLockedStakingNFT.LockPeriod.OneDay);
+        uint256 weekTokenId = staking.deposit(weekAmount, TimeLockedStakingNFT.LockPeriod.OneWeek);
+        uint256 monthTokenId = staking.deposit(monthAmount, TimeLockedStakingNFT.LockPeriod.OneMonth);
+
+        uint256 totalShares = dayAmount + weekAmount + monthAmount;
+        uint256 totalReward = 300 ether;
+        token.mint(address(rewardSource), totalReward);
 
         console.log("Total shares before rewards", totalShares);
         console.log("Reward source balance before distribute", token.balanceOf(address(rewardSource)));
 
-        staking.distributeRewards(300 ether);
+        staking.distributeRewards(totalReward);
 
-        uint256 precision = 1e18;
         uint256 daySlot = _floorTimestamp(block.timestamp, 1 days);
         uint256 weekSlot = _floorTimestamp(block.timestamp, 1 weeks);
         uint256 nextDaySlot = daySlot + 1 days;
@@ -139,26 +145,34 @@ contract TimeLockedStakingNFTTest is Test, IERC721Receiver {
         uint256 nextMonthSlot = _floorTimestamp(block.timestamp, 4 weeks) + 4 weeks;
         console.log("currentWeekSlot", weekSlot);
         console.log("navPerTier day", staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneDay));
-        uint256 dayReward = Math.mulDiv(300 ether, 100 ether, totalShares);
-        uint256 weekReward = Math.mulDiv(300 ether, 200 ether, totalShares);
-        uint256 monthReward = Math.mulDiv(300 ether, 300 ether, totalShares);
-        uint256 dayNavDelta = Math.mulDiv(dayReward, precision, 100 ether);
-        uint256 weekNavDelta = Math.mulDiv(weekReward, precision, 200 ether);
-        uint256 monthNavDelta = Math.mulDiv(monthReward, precision, 300 ether);
+
+        uint256 dayWeighted = dayAmount * DAY_BOOST;
+        uint256 weekWeighted = weekAmount * WEEK_BOOST;
+        uint256 monthWeighted = monthAmount * MONTH_BOOST;
+        uint256 totalWeighted = dayWeighted + weekWeighted + monthWeighted;
+
+        uint256 dayReward = Math.mulDiv(totalReward, dayWeighted, totalWeighted);
+        uint256 weekReward = Math.mulDiv(totalReward, weekWeighted, totalWeighted);
+        uint256 monthReward = Math.mulDiv(totalReward, monthWeighted, totalWeighted);
+
+        uint256 dayNavDelta = Math.mulDiv(dayReward, PRECISION, dayAmount);
+        uint256 weekNavDelta = Math.mulDiv(weekReward, PRECISION, weekAmount);
+        uint256 monthNavDelta = Math.mulDiv(monthReward, PRECISION, monthAmount);
 
         assertEq(
-            staking.navPerTierAtSlot(TimeLockedStakingNFT.LockPeriod.OneDay, nextDaySlot), precision + dayNavDelta
+            staking.navPerTierAtSlot(TimeLockedStakingNFT.LockPeriod.OneDay, nextDaySlot), PRECISION + dayNavDelta
         );
         assertEq(
-            staking.navPerTierAtSlot(TimeLockedStakingNFT.LockPeriod.OneWeek, nextWeekSlot), precision + weekNavDelta
+            staking.navPerTierAtSlot(TimeLockedStakingNFT.LockPeriod.OneWeek, nextWeekSlot), PRECISION + weekNavDelta
         );
         assertEq(
-            staking.navPerTierAtSlot(TimeLockedStakingNFT.LockPeriod.OneMonth, nextMonthSlot), precision + monthNavDelta
+            staking.navPerTierAtSlot(TimeLockedStakingNFT.LockPeriod.OneMonth, nextMonthSlot), PRECISION + monthNavDelta
         );
-        assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneDay), precision + dayNavDelta);
-        assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), precision + weekNavDelta);
-        assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneMonth), precision + monthNavDelta);
-        uint256 expectedDust = 300 ether - (dayReward + weekReward + monthReward);
+        assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneDay), PRECISION + dayNavDelta);
+        assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), PRECISION + weekNavDelta);
+        assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneMonth), PRECISION + monthNavDelta);
+
+        uint256 expectedDust = totalReward - (dayReward + weekReward + monthReward);
         assertEq(staking.rewardDust(), expectedDust);
         assertEq(token.balanceOf(address(rewardSource)), 0);
 
@@ -170,8 +184,10 @@ contract TimeLockedStakingNFTTest is Test, IERC721Receiver {
         staking.withdraw(monthTokenId);
         staking.withdraw(weekTokenId);
 
-        uint256 expectedRewards = dayReward + weekReward + monthReward;
-        uint256 expectedBalance = 1_000 ether + expectedRewards;
+        uint256 payoutDay = Math.mulDiv(dayAmount, PRECISION + dayNavDelta, PRECISION);
+        uint256 payoutWeek = Math.mulDiv(weekAmount, PRECISION + weekNavDelta, PRECISION);
+        uint256 payoutMonth = Math.mulDiv(monthAmount, PRECISION + monthNavDelta, PRECISION);
+        uint256 expectedBalance = (1_000 ether - totalShares) + payoutDay + payoutWeek + payoutMonth;
         assertEq(token.balanceOf(address(this)), expectedBalance);
         assertEq(staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneDay), 0);
         assertEq(staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), 0);
@@ -196,11 +212,14 @@ contract TimeLockedStakingNFTTest is Test, IERC721Receiver {
     }
 
     function testDelayedWithdrawUsesUnlockNav() public {
-        uint256 dayTokenId = staking.deposit(100 ether, TimeLockedStakingNFT.LockPeriod.OneDay);
-        staking.deposit(200 ether, TimeLockedStakingNFT.LockPeriod.OneWeek);
+        uint256 dayAmount = 100 ether;
+        uint256 weekAmount = 200 ether;
+        uint256 dayTokenId = staking.deposit(dayAmount, TimeLockedStakingNFT.LockPeriod.OneDay);
+        staking.deposit(weekAmount, TimeLockedStakingNFT.LockPeriod.OneWeek);
         TimeLockedStakingNFT.Position memory dayPosition = staking.getPosition(dayTokenId);
-        token.mint(address(rewardSource), 150 ether);
-        staking.distributeRewards(150 ether);
+        uint256 totalReward = 150 ether;
+        token.mint(address(rewardSource), totalReward);
+        staking.distributeRewards(totalReward);
 
         vm.warp(dayPosition.unlockTimestamp + 1 minutes);
 
@@ -209,7 +228,16 @@ contract TimeLockedStakingNFTTest is Test, IERC721Receiver {
         staking.withdraw(dayTokenId);
         uint256 balanceAfter = token.balanceOf(address(this));
 
-        assertEq(balanceAfter - balanceBefore, 150 ether);
+        uint256 weekShares = staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek);
+        uint256 dayShares = dayPosition.sharesAmount;
+        uint256 dayWeighted = dayShares * DAY_BOOST;
+        uint256 weekWeighted = weekShares * WEEK_BOOST;
+        uint256 totalWeighted = dayWeighted + weekWeighted;
+        uint256 dayReward = Math.mulDiv(totalReward, dayWeighted, totalWeighted);
+        uint256 expectedNav = PRECISION + Math.mulDiv(dayReward, PRECISION, dayShares);
+        uint256 expectedPayout = Math.mulDiv(dayShares, expectedNav, PRECISION);
+
+        assertEq(balanceAfter - balanceBefore, expectedPayout);
     }
 
     function _ceilTimestamp(uint256 timestamp, uint256 size) internal pure returns (uint256) {
@@ -226,6 +254,13 @@ contract TimeLockedStakingNFTTest is Test, IERC721Receiver {
             slot += size;
         }
         return slot;
+    }
+
+    function _defaultBoostFactors() internal pure returns (uint256[] memory factors) {
+        factors = new uint256[](3);
+        factors[0] = DAY_BOOST;
+        factors[1] = WEEK_BOOST;
+        factors[2] = MONTH_BOOST;
     }
 
     function onERC721Received(address, address, uint256, bytes calldata)

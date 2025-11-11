@@ -40,7 +40,7 @@ contract TimeLockedStakingNFTRenewalTest is Test {
 
     function setUp() public {
         token = new MockToken();
-        staking = new TimeLockedStakingNFT(token);
+        staking = new TimeLockedStakingNFT(token, _defaultBoostFactors());
         rewardSource = new RewardSource(token);
         staking.setRewardSource(address(rewardSource));
 
@@ -304,5 +304,12 @@ contract TimeLockedStakingNFTRenewalTest is Test {
 
     function _unlock(uint256 tokenId) internal view returns (uint256) {
         return staking.getPosition(tokenId).unlockTimestamp;
+    }
+
+    function _defaultBoostFactors() internal pure returns (uint256[] memory factors) {
+        factors = new uint256[](3);
+        factors[0] = 100;
+        factors[1] = 105;
+        factors[2] = 110;
     }
 }
