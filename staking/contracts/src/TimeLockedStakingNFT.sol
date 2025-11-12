@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {ERC721} from "openzeppelin-contracts/contracts/token/ERC721/ERC721.sol";
+import {ERC721Enumerable} from "openzeppelin-contracts/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
 import {Ownable} from "openzeppelin-contracts/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -13,7 +14,7 @@ import {Math} from "openzeppelin-contracts/contracts/utils/math/Math.sol";
  * @notice Accepts ERC20 deposits, locks them for a fixed period and mints an ERC721 position NFT.
  *         Rewards are tracked per lock tier via a NAV accumulator that grows when new rewards are distributed.
  */
-contract TimeLockedStakingNFT is ERC721, Ownable, ReentrancyGuard {
+contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     /// -----------------------------------------------------------------------
