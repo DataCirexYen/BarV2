@@ -33,9 +33,10 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
     /// -----------------------------------------------------------------------
 
     enum LockPeriod {
-        OneDay,
         OneWeek,
-        OneMonth
+        OneMonth,
+        ThreeMonths,
+        TwelveMonths
     }
 
     struct Position {
@@ -65,9 +66,10 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
     address public rewardSource;
     uint256 public rewardDust;
 
-    uint256 private constant ONE_DAY = 1 days;
     uint256 private constant ONE_WEEK = 7 days;
-    uint256 private constant ONE_MONTH = 4 * ONE_WEEK;
+    uint256 private constant FOUR_WEEKS = 4 * ONE_WEEK;
+    uint256 private constant TWELVE_WEEKS = 12 * ONE_WEEK;
+    uint256 private constant FORTY_EIGHT_WEEKS = 48 * ONE_WEEK;
     uint256 private constant PRECISION = 1e18;
 
     /// -----------------------------------------------------------------------
@@ -91,9 +93,10 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
         uint256 amountPulled,
         uint256 totalRewardAccounted,
         uint256 currentSlot,
-        uint256 navDeltaDay,
         uint256 navDeltaWeek,
         uint256 navDeltaMonth,
+        uint256 navDeltaThreeMonths,
+        uint256 navDeltaTwelveMonths,
         uint256 dust
     );
 
@@ -101,33 +104,39 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
     /// Constructor
     /// -----------------------------------------------------------------------
 
-    constructor(IERC20 stakingToken_, uint256[] memory boostFactorPerTier_) ERC721("Time Locked Staking Position", "TLS") Ownable(msg.sender) {
+    constructor(IERC20 stakingToken_) ERC721("Time Locked Staking Position", "TLS") Ownable(msg.sender) {
         if (address(stakingToken_) == address(0)) {
             revert ZeroAddress();
         }
         stakingToken = stakingToken_;
-        navPerTier[LockPeriod.OneDay] = PRECISION;
         navPerTier[LockPeriod.OneWeek] = PRECISION;
         navPerTier[LockPeriod.OneMonth] = PRECISION;
-        boostFactorPerTier[LockPeriod.OneDay] = boostFactorPerTier_[0];
-        boostFactorPerTier[LockPeriod.OneWeek] = boostFactorPerTier_[1];
-        boostFactorPerTier[LockPeriod.OneMonth] = boostFactorPerTier_[2];
+        navPerTier[LockPeriod.ThreeMonths] = PRECISION;
+        navPerTier[LockPeriod.TwelveMonths] = PRECISION;
+        boostFactorPerTier[LockPeriod.OneWeek] = 1_050_000_000_000_000_000;
+        boostFactorPerTier[LockPeriod.OneMonth] = 1_100_000_000_000_000_000;
+        boostFactorPerTier[LockPeriod.ThreeMonths] = 1_200_000_000_000_000_000;
+        boostFactorPerTier[LockPeriod.TwelveMonths] = 1_400_000_000_000_000_000;
 
-        uint256 daySlot = _floorToSlot(LockPeriod.OneDay, block.timestamp);
         uint256 weekSlot = _floorToSlot(LockPeriod.OneWeek, block.timestamp);
         uint256 monthSlot = _floorToSlot(LockPeriod.OneMonth, block.timestamp);
+        uint256 threeMonthSlot = _floorToSlot(LockPeriod.ThreeMonths, block.timestamp);
+        uint256 twelveMonthSlot = _floorToSlot(LockPeriod.TwelveMonths, block.timestamp);
 
-        _lastExpiredSlotUpdated[LockPeriod.OneDay] = daySlot;
         _lastExpiredSlotUpdated[LockPeriod.OneWeek] = weekSlot;
         _lastExpiredSlotUpdated[LockPeriod.OneMonth] = monthSlot;
+        _lastExpiredSlotUpdated[LockPeriod.ThreeMonths] = threeMonthSlot;
+        _lastExpiredSlotUpdated[LockPeriod.TwelveMonths] = twelveMonthSlot;
 
-        cumulativeExpiredSharesAtSlot[LockPeriod.OneDay][daySlot] = 0;
         cumulativeExpiredSharesAtSlot[LockPeriod.OneWeek][weekSlot] = 0;
         cumulativeExpiredSharesAtSlot[LockPeriod.OneMonth][monthSlot] = 0;
+        cumulativeExpiredSharesAtSlot[LockPeriod.ThreeMonths][threeMonthSlot] = 0;
+        cumulativeExpiredSharesAtSlot[LockPeriod.TwelveMonths][twelveMonthSlot] = 0;
 
-        _ensureNavCheckpoint(LockPeriod.OneDay, daySlot, PRECISION);
         _ensureNavCheckpoint(LockPeriod.OneWeek, weekSlot, PRECISION);
         _ensureNavCheckpoint(LockPeriod.OneMonth, monthSlot, PRECISION);
+        _ensureNavCheckpoint(LockPeriod.ThreeMonths, threeMonthSlot, PRECISION);
+        _ensureNavCheckpoint(LockPeriod.TwelveMonths, twelveMonthSlot, PRECISION);
     }
 
     /// -----------------------------------------------------------------------
@@ -137,7 +146,7 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
     /**
      * @notice Lock `amount` of stakingToken and mint a position NFT to `msg.sender`.
      * @param amount The amount of tokens to lock.
-     * @param lockPeriod The selected lock tier (1 day, 1 week or 1 month).
+     * @param lockPeriod The selected lock tier (1 week, 1 month, 3 months or 12 months).
      * @return tokenId The id of the minted NFT that represents the locked position.
      */
     function deposit(uint256 amount, LockPeriod lockPeriod) external nonReentrant returns (uint256 tokenId) {
@@ -240,19 +249,25 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
             revert RewardSourceNotSet();
         }
 
-        uint256 daySlot = _floorToSlot(LockPeriod.OneDay, block.timestamp);
         uint256 weekSlot = _floorToSlot(LockPeriod.OneWeek, block.timestamp);
         uint256 monthSlot = _floorToSlot(LockPeriod.OneMonth, block.timestamp);
+        uint256 threeMonthSlot = _floorToSlot(LockPeriod.ThreeMonths, block.timestamp);
+        uint256 twelveMonthSlot = _floorToSlot(LockPeriod.TwelveMonths, block.timestamp);
 
-        uint256 dayShares = _activeSharesForSlot(LockPeriod.OneDay, daySlot);
         uint256 weekShares = _activeSharesForSlot(LockPeriod.OneWeek, weekSlot);
         uint256 monthShares = _activeSharesForSlot(LockPeriod.OneMonth, monthSlot);
+        uint256 threeMonthShares = _activeSharesForSlot(LockPeriod.ThreeMonths, threeMonthSlot);
+        uint256 twelveMonthShares = _activeSharesForSlot(LockPeriod.TwelveMonths, twelveMonthSlot);
 
-        uint256 dayBoostFactor = boostFactorPerTier[LockPeriod.OneDay];
         uint256 weekBoostFactor = boostFactorPerTier[LockPeriod.OneWeek];
         uint256 monthBoostFactor = boostFactorPerTier[LockPeriod.OneMonth];
+        uint256 threeMonthBoostFactor = boostFactorPerTier[LockPeriod.ThreeMonths];
+        uint256 twelveMonthBoostFactor = boostFactorPerTier[LockPeriod.TwelveMonths];
 
-        uint256 activeShares = dayShares * dayBoostFactor + weekShares * weekBoostFactor + monthShares * monthBoostFactor;
+        uint256 activeShares = weekShares * weekBoostFactor
+            + monthShares * monthBoostFactor
+            + threeMonthShares * threeMonthBoostFactor
+            + twelveMonthShares * twelveMonthBoostFactor;
         if (activeShares == 0) {
             revert NoActiveShares();
         }
@@ -261,15 +276,6 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
 
         uint256 totalReward = amount + rewardDust;
         uint256 distributed;
-
-        uint256 dayNavDelta;
-        if (dayShares != 0) {
-            uint256 dayReward = Math.mulDiv(totalReward, dayShares * dayBoostFactor, activeShares);
-            dayNavDelta = Math.mulDiv(dayReward, PRECISION, dayShares);
-            navPerTier[LockPeriod.OneDay] += dayNavDelta;
-            _recordNavOnDistribution(LockPeriod.OneDay, daySlot);
-            distributed += dayReward;
-        }
 
         uint256 weekNavDelta;
         if (weekShares != 0) {
@@ -289,16 +295,44 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
             distributed += monthReward;
         }
 
+        uint256 threeMonthNavDelta;
+        if (threeMonthShares != 0) {
+            uint256 threeMonthReward = Math.mulDiv(totalReward, threeMonthShares * threeMonthBoostFactor, activeShares);
+            threeMonthNavDelta = Math.mulDiv(threeMonthReward, PRECISION, threeMonthShares);
+            navPerTier[LockPeriod.ThreeMonths] += threeMonthNavDelta;
+            _recordNavOnDistribution(LockPeriod.ThreeMonths, threeMonthSlot);
+            distributed += threeMonthReward;
+        }
+
+        uint256 twelveMonthNavDelta;
+        if (twelveMonthShares != 0) {
+            uint256 twelveMonthReward =
+                Math.mulDiv(totalReward, twelveMonthShares * twelveMonthBoostFactor, activeShares);
+            twelveMonthNavDelta = Math.mulDiv(twelveMonthReward, PRECISION, twelveMonthShares);
+            navPerTier[LockPeriod.TwelveMonths] += twelveMonthNavDelta;
+            _recordNavOnDistribution(LockPeriod.TwelveMonths, twelveMonthSlot);
+            distributed += twelveMonthReward;
+        }
+
         rewardDust = totalReward - distributed;
 
         // Ensure a checkpoint exists for every tier at this slot,
         // even if a given tier received zero delta this round.
-        _recordNavOnDistribution(LockPeriod.OneDay, daySlot);
         _recordNavOnDistribution(LockPeriod.OneWeek, weekSlot);
         _recordNavOnDistribution(LockPeriod.OneMonth, monthSlot);
+        _recordNavOnDistribution(LockPeriod.ThreeMonths, threeMonthSlot);
+        _recordNavOnDistribution(LockPeriod.TwelveMonths, twelveMonthSlot);
 
         emit RewardsDistributed(
-            msg.sender, amount, totalReward, weekSlot, dayNavDelta, weekNavDelta, monthNavDelta, rewardDust
+            msg.sender,
+            amount,
+            totalReward,
+            weekSlot,
+            weekNavDelta,
+            monthNavDelta,
+            threeMonthNavDelta,
+            twelveMonthNavDelta,
+            rewardDust
         );
     }
 
@@ -350,14 +384,17 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
     /// -----------------------------------------------------------------------
 
     function _slotSize(LockPeriod lockPeriod) private pure returns (uint256) {
-        if (lockPeriod == LockPeriod.OneDay) {
-            return ONE_DAY;
-        }
         if (lockPeriod == LockPeriod.OneWeek) {
             return ONE_WEEK;
         }
         if (lockPeriod == LockPeriod.OneMonth) {
-            return ONE_MONTH;
+            return FOUR_WEEKS;
+        }
+        if (lockPeriod == LockPeriod.ThreeMonths) {
+            return TWELVE_WEEKS;
+        }
+        if (lockPeriod == LockPeriod.TwelveMonths) {
+            return FORTY_EIGHT_WEEKS;
         }
         revert InvalidLockPeriod();
     }

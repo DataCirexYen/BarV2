@@ -9,13 +9,8 @@ contract DeployTimeLockedStakingNFT is Script {
     function run() external {
         address stakingToken = vm.envAddress("STAKING_TOKEN");
 
-        uint256[] memory boostFactors = new uint256[](3);
-        boostFactors[0] = 100; // 1.00x weight for day tier
-        boostFactors[1] = 105; // 1.05x weight for week tier
-        boostFactors[2] = 110; // 1.10x weight for month tier
-
         vm.startBroadcast();
-        new TimeLockedStakingNFT(IERC20(stakingToken), boostFactors);
+        new TimeLockedStakingNFT(IERC20(stakingToken));
         vm.stopBroadcast();
     }
 }

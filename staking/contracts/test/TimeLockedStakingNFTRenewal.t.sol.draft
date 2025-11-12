@@ -40,7 +40,7 @@ contract TimeLockedStakingNFTRenewalTest is Test {
 
     function setUp() public {
         token = new MockToken();
-        staking = new TimeLockedStakingNFT(token, _defaultBoostFactors());
+        staking = new TimeLockedStakingNFT(token);
         rewardSource = new RewardSource(token);
         staking.setRewardSource(address(rewardSource));
 
@@ -88,10 +88,10 @@ contract TimeLockedStakingNFTRenewalTest is Test {
         vm.warp(1 weeks - 1 days);
         vm.prank(BOB);
         uint256 bobWeekOneTokenId =
-            staking.deposit(BOB_AMOUNT, TimeLockedStakingNFT.LockPeriod.OneDay);
+            staking.deposit(BOB_AMOUNT, TimeLockedStakingNFT.LockPeriod.OneWeek);
         assertEq(_unlock(bobWeekOneTokenId), 1 weeks);
         assertEq(
-            staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneDay),
+            staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek),
             Math.mulDiv(BOB_AMOUNT, PRECISION, _entryNav(bobWeekOneTokenId))
         );
 
@@ -106,25 +106,25 @@ contract TimeLockedStakingNFTRenewalTest is Test {
                 PRECISION,
                 staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneMonth)
             );
-        assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneDay), PRECISION);
+        assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), PRECISION);
         assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), PRECISION);
         assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneMonth), monthNavAfterFirstWeek);
 
         // Bob renews by exiting and entering again as the second week advances.
         vm.prank(BOB);
         staking.withdraw(bobWeekOneTokenId);
-        assertEq(staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneDay), 0);
+        assertEq(staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), 0);
         uint256 bobInitialBalance = token.balanceOf(BOB);
 
         // Bob starts the next renewal on what corresponds to the second week.
         vm.warp(2 weeks - 1 days);
         vm.prank(BOB);
         uint256 bobWeekTwoTokenId =
-            staking.deposit(BOB_AMOUNT, TimeLockedStakingNFT.LockPeriod.OneDay);
+            staking.deposit(BOB_AMOUNT, TimeLockedStakingNFT.LockPeriod.OneWeek);
         uint256 bobWeekTwoUnlock = _unlock(bobWeekTwoTokenId);
         assertEq(bobWeekTwoUnlock, 2 weeks);
         assertEq(
-            staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneDay),
+            staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek),
             Math.mulDiv(BOB_AMOUNT, PRECISION, _entryNav(bobWeekTwoTokenId))
         );
 
@@ -141,7 +141,7 @@ contract TimeLockedStakingNFTRenewalTest is Test {
             uint256 expectedMonthNav = monthNavAfterFirstWeek
                 + Math.mulDiv(monthRewardShare, PRECISION, JIM_AMOUNT);
 
-            assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneDay), expectedDayNav);
+            assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), expectedDayNav);
             assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), PRECISION);
             assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneMonth), expectedMonthNav);
         }
@@ -159,7 +159,7 @@ contract TimeLockedStakingNFTRenewalTest is Test {
         vm.warp(2 weeks + 1 minutes);
         assertEq(
             staking.expiredSharesAtSlot(
-                TimeLockedStakingNFT.LockPeriod.OneDay, bobWeekTwoUnlock
+                TimeLockedStakingNFT.LockPeriod.OneWeek, bobWeekTwoUnlock
             ),
             BOB_AMOUNT
         );
@@ -168,11 +168,11 @@ contract TimeLockedStakingNFTRenewalTest is Test {
         staking.withdraw(bobWeekTwoTokenId);
         uint256 bobFinalBalance = token.balanceOf(BOB);
         assertEq(
-            staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneDay), 0
+            staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), 0
         );
         assertEq(
             staking.expiredSharesAtSlot(
-                TimeLockedStakingNFT.LockPeriod.OneDay, bobWeekTwoUnlock
+                TimeLockedStakingNFT.LockPeriod.OneWeek, bobWeekTwoUnlock
             ),
             0
         );
@@ -199,10 +199,10 @@ contract TimeLockedStakingNFTRenewalTest is Test {
         // A day-tier staker remains idle past the fourth week without withdrawing.
         vm.warp(4 weeks - 12 hours);
         vm.prank(CAROL);
-        uint256 carolTokenId = staking.deposit(CAROL_AMOUNT, TimeLockedStakingNFT.LockPeriod.OneDay);
+        uint256 carolTokenId = staking.deposit(CAROL_AMOUNT, TimeLockedStakingNFT.LockPeriod.OneWeek);
         assertEq(_unlock(carolTokenId), 4 weeks);
         assertEq(
-            staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneDay),
+            staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek),
             Math.mulDiv(CAROL_AMOUNT, PRECISION, _entryNav(carolTokenId))
         );
 
@@ -239,7 +239,7 @@ contract TimeLockedStakingNFTRenewalTest is Test {
                     PRECISION,
                     BOB_AMOUNT
                 );
-            assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneDay), expectedDayNav2);
+            assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), expectedDayNav2);
         }
         assertEq(staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), expectedWeekNavAfterThird);
         {
@@ -258,10 +258,10 @@ contract TimeLockedStakingNFTRenewalTest is Test {
 
         // Expired share checkpoints track idle positions for each tier.
         assertEq(
-            staking.cumulativeExpiredShares(TimeLockedStakingNFT.LockPeriod.OneDay),    Math.mulDiv(CAROL_AMOUNT, PRECISION, _entryNav(carolTokenId))
+            staking.cumulativeExpiredShares(TimeLockedStakingNFT.LockPeriod.OneWeek),    Math.mulDiv(CAROL_AMOUNT, PRECISION, _entryNav(carolTokenId))
         );
         assertEq(
-            staking.cumulativeExpiredSharesAtSlot(TimeLockedStakingNFT.LockPeriod.OneDay, 4 weeks),    Math.mulDiv(CAROL_AMOUNT, PRECISION, _entryNav(carolTokenId))
+            staking.cumulativeExpiredSharesAtSlot(TimeLockedStakingNFT.LockPeriod.OneWeek, 4 weeks),    Math.mulDiv(CAROL_AMOUNT, PRECISION, _entryNav(carolTokenId))
         );
         assertEq(
             staking.cumulativeExpiredShares(TimeLockedStakingNFT.LockPeriod.OneWeek), Math.mulDiv(ALICE_AMOUNT, PRECISION, _entryNav(aliceTokenId))
@@ -279,7 +279,7 @@ contract TimeLockedStakingNFTRenewalTest is Test {
         // The only active shares were KATE's renewed deposit.
         uint256 carolEntryNavFinal = _entryNav(carolTokenId);
         assertEq(
-            staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneDay),
+            staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek),
             Math.mulDiv(CAROL_AMOUNT, PRECISION, carolEntryNavFinal)
         );
         uint256 aliceEntryNavFinal = _entryNav(aliceTokenId);
@@ -306,10 +306,4 @@ contract TimeLockedStakingNFTRenewalTest is Test {
         return staking.getPosition(tokenId).unlockTimestamp;
     }
 
-    function _defaultBoostFactors() internal pure returns (uint256[] memory factors) {
-        factors = new uint256[](3);
-        factors[0] = 100;
-        factors[1] = 105;
-        factors[2] = 110;
-    }
 }

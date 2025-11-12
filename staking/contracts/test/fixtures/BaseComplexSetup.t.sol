@@ -26,9 +26,6 @@ abstract contract BaseComplexSetup is Test {
     RewardSource internal rewardSource;
 
     uint256 internal constant PRECISION = 1e18;
-    uint256 internal constant DAY_BOOST = 100;
-    uint256 internal constant WEEK_BOOST = 105;
-    uint256 internal constant MONTH_BOOST = 110;
 
     address internal constant ALICE = address(0xA11CE);
     address internal constant BOB = address(0xB0B);
@@ -39,7 +36,7 @@ abstract contract BaseComplexSetup is Test {
     uint256 internal constant ALICE_INITIAL_DEPOSIT = 400 ether;
     uint256 internal constant CAROL_MONTHLY_DEPOSIT = 600 ether;
     uint256 internal constant DAVE_MONTHLY_DEPOSIT = 500 ether;
-    uint256 internal constant BOB_DAYLOCK_DEPOSIT = 180 ether;
+    uint256 internal constant BOB_WEEKLOCK_DEPOSIT = 180 ether;
     uint256 internal constant ALICE_RENEWED_DEPOSIT = 250 ether;
 
     uint256 internal constant FIRST_REWARD = 360 ether;
@@ -48,12 +45,12 @@ abstract contract BaseComplexSetup is Test {
     uint256 internal aliceWeekTokenId;
     uint256 internal carolMonthTokenId;
     uint256 internal daveMonthTokenId;
-    uint256 internal bobDayTokenId;
+    uint256 internal bobWeekTokenId;
     uint256 internal aliceRenewedWeekTokenId;
 
     function setUp() public virtual {
         token = new MockRewardToken();
-        staking = new TimeLockedStakingNFT(token, _defaultBoostFactors());
+        staking = new TimeLockedStakingNFT(token);
         rewardSource = new RewardSource(token);
 
         staking.setRewardSource(address(rewardSource));
@@ -83,16 +80,16 @@ abstract contract BaseComplexSetup is Test {
 
         vm.warp(1 weeks - 30 minutes);
         vm.prank(BOB);
-        bobDayTokenId = staking.deposit(BOB_DAYLOCK_DEPOSIT, TimeLockedStakingNFT.LockPeriod.OneDay);
+        bobWeekTokenId = staking.deposit(BOB_WEEKLOCK_DEPOSIT, TimeLockedStakingNFT.LockPeriod.OneWeek);
 
         vm.warp(1 weeks + 5 minutes);
         staking.distributeRewards(FIRST_REWARD);
 
-        TimeLockedStakingNFT.Position memory bobPos = staking.getPosition(bobDayTokenId);
+        TimeLockedStakingNFT.Position memory bobPos = staking.getPosition(bobWeekTokenId);
         vm.warp(bobPos.unlockTimestamp + 1);
     
         vm.prank(BOB);
-        staking.withdraw(bobDayTokenId);
+        staking.withdraw(bobWeekTokenId);
 
         vm.warp(3 weeks + 1 hours);
         vm.prank(ALICE);
@@ -125,12 +122,5 @@ abstract contract BaseComplexSetup is Test {
             slot += size;
         }
         return slot;
-    }
-
-    function _defaultBoostFactors() internal pure returns (uint256[] memory factors) {
-        factors = new uint256[](3);
-        factors[0] = DAY_BOOST;
-        factors[1] = WEEK_BOOST;
-        factors[2] = MONTH_BOOST;
     }
 }
