@@ -284,19 +284,15 @@ contract RevenueBridger is OwnableRoles, ReentrancyGuard {
         IRedSnwapper.OutputToken[] calldata outputTokens,
         address usdcToken
     ) internal view {
-        uint256 length = outputTokens.length;
-        if (length != 1) revert RevenueBridger__InvalidOutputCount();
-        for (uint256 i; i < length;) {
-            IRedSnwapper.OutputToken calldata output = outputTokens[i];
-            if (output.token == usdcToken && output.recipient == address(this)) {
-                return;
-            }
-            unchecked {
-                ++i;
-            }
+        if (
+            outputTokens.length != 1 ||
+            outputTokens[0].token != usdcToken ||
+            outputTokens[0].recipient != address(this)
+        ) {
+            revert RevenueBridger__MissingUsdcOutput();
         }
-        revert RevenueBridger__MissingUsdcOutput();
     }
+
 
     function _approveToken(address token, address spender, uint256 amount) internal {
         IERC20 erc20Token = IERC20(token);

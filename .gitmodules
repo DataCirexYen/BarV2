@@ -4,3 +4,12 @@
 [submodule "staking/contracts/lib/openzeppelin-contracts"]
 	path = staking/contracts/lib/openzeppelin-contracts
 	url = https://github.com/OpenZeppelin/openzeppelin-contracts
+[submodule "bridger/contracts/lib/openzeppelin-contracts"]
+	path = bridger/contracts/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts
+[submodule "bridger/contracts/lib/forge-std"]
+	path = bridger/contracts/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "bridger/contracts/lib/solady"]
+	path = bridger/contracts/lib/solady
+	url = https://github.com/vectorized/solady
