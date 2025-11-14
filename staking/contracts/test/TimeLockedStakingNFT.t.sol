@@ -109,6 +109,78 @@ contract TimeLockedStakingNFTTest is Test, IERC721Receiver {
         assertEq(staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), 0);
     }
 
+    function testEarlyWithdrawAppliesPenaltyOnProfits() public {
+        uint256 amount = 100 ether;
+        uint256 reward = 50 ether;
+        uint256 tokenId = staking.deposit(amount, TimeLockedStakingNFT.LockPeriod.OneMonth);
+        TimeLockedStakingNFT.Position memory position = staking.getPosition(tokenId);
+
+        token.mint(address(rewardSource), reward);
+        staking.distributeRewards(reward);
+
+        vm.warp(block.timestamp + 2 weeks);
+        assertLt(block.timestamp, position.unlockTimestamp);
+
+        uint256 balanceBefore = token.balanceOf(address(this));
+        staking.earlyWithdraw(tokenId);
+        uint256 balanceAfter = token.balanceOf(address(this));
+
+        uint256 navCurrent = staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneMonth);
+        uint256 principal = Math.mulDiv(position.sharesAmount, position.entryNav, PRECISION);
+        uint256 currentValue = Math.mulDiv(position.sharesAmount, navCurrent, PRECISION);
+        uint256 profit = currentValue - principal;
+        uint256 penalty = Math.mulDiv(profit, 40, 100);
+        uint256 expectedPayout = principal + (profit - penalty);
+        assertEq(balanceAfter - balanceBefore, expectedPayout);
+        assertEq(staking.rewardDust(), penalty);
+        assertEq(staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneMonth), 0);
+        vm.expectRevert();
+        staking.ownerOf(tokenId);
+    }
+
+    function testEarlyWithdrawPenaltyFeedsFutureRewards() public {
+        uint256 amountA = 100 ether;
+        uint256 amountB = 200 ether;
+        uint256 tokenA = staking.deposit(amountA, TimeLockedStakingNFT.LockPeriod.OneMonth);
+        uint256 tokenB = staking.deposit(amountB, TimeLockedStakingNFT.LockPeriod.OneMonth);
+
+        token.mint(address(rewardSource), 60 ether);
+        staking.distributeRewards(60 ether);
+        console.log("dust", staking.rewardDust());
+        
+        vm.warp(block.timestamp + 2 weeks);
+        staking.earlyWithdraw(tokenA);
+
+        uint256 dustBeforeSecond = staking.rewardDust();
+        assertGt(dustBeforeSecond, 0);
+
+        uint256 navBeforeSecond = staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneMonth);
+        uint256 nextReward = 12 ether;
+        token.mint(address(rewardSource), nextReward);
+        staking.distributeRewards(nextReward);
+
+        uint256 dustAfterSecond = staking.rewardDust();
+        uint256 navAfterSecond = staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneMonth);
+        uint256 rewardApplied = dustBeforeSecond + nextReward - dustAfterSecond;
+        uint256 remainingShares = staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneMonth);
+        uint256 expectedNavDelta = Math.mulDiv(rewardApplied, PRECISION, remainingShares);
+        assertEq(navAfterSecond - navBeforeSecond, expectedNavDelta);
+
+        TimeLockedStakingNFT.Position memory positionB = staking.getPosition(tokenB);
+        uint256 unlockSlot = positionB.unlockTimestamp;
+        uint256 navAtUnlock = staking.navPerTierAtSlot(TimeLockedStakingNFT.LockPeriod.OneMonth, unlockSlot);
+        assertEq(navAtUnlock, navAfterSecond);
+
+        vm.warp(unlockSlot + 1);
+        uint256 balanceBefore = token.balanceOf(address(this));
+        staking.withdraw(tokenB);
+        uint256 balanceAfter = token.balanceOf(address(this));
+
+        uint256 expectedPayout = Math.mulDiv(positionB.sharesAmount, navAtUnlock, PRECISION);
+        assertEq(balanceAfter - balanceBefore, expectedPayout);
+        
+    }
+
     function testDistributeRewardsRevertsWhenNoShares() public {
         vm.expectRevert(TimeLockedStakingNFT.NoActiveShares.selector);
         staking.distributeRewards(50 ether);

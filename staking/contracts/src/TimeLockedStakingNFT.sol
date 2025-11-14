@@ -25,6 +25,7 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
     error InvalidLockPeriod();
     error PositionNotFound(uint256 tokenId);
     error UnlockNotReached(uint256 unlockTimestamp, uint256 currentTimestamp);
+    error EarlyWithdrawUnavailable(uint256 unlockTimestamp, uint256 currentTimestamp);
     error NoActiveShares();
     error RewardSourceNotSet();
 
@@ -86,6 +87,7 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
     );
 
     event Withdrawn(address indexed owner, uint256 indexed tokenId, uint256 amount);
+    event EarlyWithdraw(address indexed owner, uint256 indexed tokenId, uint256 payout, uint256 penaltyAmount);
     event RewardSourceUpdated(address indexed newRewardSource);
     event BoostFactorPerTierUpdated(LockPeriod indexed lockPeriod, uint256 indexed boostFactor);
     event RewardsDistributed(
@@ -209,23 +211,7 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
         uint256 navAtUnlock = _navAtOrBefore(position.lockPeriod, unlockSlot);
         _ensureNavCheckpoint(position.lockPeriod, unlockSlot, navAtUnlock);
 
-        totalSharesPerTier[position.lockPeriod] -= position.sharesAmount;
-
-        uint256 expiredForSlot = expiredSharesAtSlot[position.lockPeriod][unlockSlot];
-
-
-        if (expiredForSlot != 0) {
-            uint256 amountToRemove = position.sharesAmount;
-            if (expiredForSlot < amountToRemove) {
-                amountToRemove = expiredForSlot;
-            }
-            cumulativeExpiredShares[position.lockPeriod] -= amountToRemove;
-            cumulativeExpiredSharesAtSlot[position.lockPeriod][unlockSlot] = cumulativeExpiredShares[position.lockPeriod];
-            expiredSharesAtSlot[position.lockPeriod][unlockSlot] = expiredForSlot - amountToRemove;
-            if (_lastExpiredSlotUpdated[position.lockPeriod] > unlockSlot) {
-                _lastExpiredSlotUpdated[position.lockPeriod] = unlockSlot;
-            }
-        }
+        _removePositionShares(position, unlockSlot);
 
         //Function for when we do the  non finish withdraw function.
         //uint256 gain = Math.mulDiv(navAtUnlock - position.entryNav, position.sharesAmount, PRECISION);
@@ -237,6 +223,58 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
 
         stakingToken.safeTransfer(owner_, payout);
         emit Withdrawn(owner_, tokenId, payout);
+    }
+
+    /**
+     * @notice Withdraw the locked tokens before the unlock time, applying a penalty on accrued rewards.
+     * @param tokenId The id of the NFT position to redeem early.
+     */
+    function earlyWithdraw(uint256 tokenId) external nonReentrant {
+        Position memory position = _positions[tokenId];
+        if (position.sharesAmount == 0) {
+            revert PositionNotFound(tokenId);
+        }
+
+        address owner_ = ownerOf(tokenId);
+        if (!_isAuthorized(owner_, msg.sender, tokenId)) {
+            revert ERC721InsufficientApproval(msg.sender, tokenId);
+        }
+
+        uint256 currentTimestamp = block.timestamp;
+        if (currentTimestamp >= position.unlockTimestamp) {
+            revert EarlyWithdrawUnavailable(position.unlockTimestamp, currentTimestamp);
+        }
+
+        LockPeriod lockPeriod = position.lockPeriod;
+        uint256 currentSlot = _floorToSlot(lockPeriod, currentTimestamp);
+        _realizeExpiredSharesUpTo(lockPeriod, currentSlot);
+
+        uint256 navAtCurrent = _navAtOrBefore(lockPeriod, currentSlot);
+        uint256 principal = Math.mulDiv(position.sharesAmount, position.entryNav, PRECISION);
+        uint256 currentValue = Math.mulDiv(position.sharesAmount, navAtCurrent, PRECISION);
+        uint256 profit;
+        if (currentValue > principal) {
+            profit = currentValue - principal;
+        }
+
+        uint256 penaltyAmount;
+        if (profit != 0) {
+            penaltyAmount = Math.mulDiv(profit, _penaltyPercent(lockPeriod), 100);
+        }
+
+        uint256 payout = currentValue - penaltyAmount;
+        if (penaltyAmount != 0) {
+            rewardDust += penaltyAmount;
+        }
+        uint256 unlockSlot = _floorToSlot(lockPeriod, position.unlockTimestamp);
+        _removePositionShares(position, unlockSlot);
+
+        delete _positions[tokenId];
+        _burn(tokenId);
+
+        stakingToken.safeTransfer(owner_, payout);
+
+        emit EarlyWithdraw(owner_, tokenId, payout, penaltyAmount);
     }
 
     function distributeRewards(uint256 amount) external nonReentrant {
@@ -399,6 +437,22 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
         revert InvalidLockPeriod();
     }
 
+    function _penaltyPercent(LockPeriod lockPeriod) private pure returns (uint256) {
+        if (lockPeriod == LockPeriod.OneWeek) {
+            return 30;
+        }
+        if (lockPeriod == LockPeriod.OneMonth) {
+            return 40;
+        }
+        if (lockPeriod == LockPeriod.ThreeMonths) {
+            return 60;
+        }
+        if (lockPeriod == LockPeriod.TwelveMonths) {
+            return 75;
+        }
+        revert InvalidLockPeriod();
+    }
+
     function _floorToSlot(LockPeriod lockPeriod, uint256 timestamp) private pure returns (uint256) {
         uint256 size = _slotSize(lockPeriod);
         return (timestamp / size) * size;
@@ -425,9 +479,23 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
         }
     }
 
+    function _setNavCheckpoint(LockPeriod lockPeriod, uint256 slot, uint256 navValue) private {
+        if (navPerTierAtSlot[lockPeriod][slot] == 0) {
+            navPerTierAtSlot[lockPeriod][slot] = navValue;
+            uint256[] storage slots = _navSlots[lockPeriod];
+            uint256 len = slots.length;
+            if (len == 0 || slots[len - 1] < slot) {
+                slots.push(slot);
+            }
+            return;
+        }
+        navPerTierAtSlot[lockPeriod][slot] = navValue;
+    }
+
     function _recordNavOnDistribution(LockPeriod lockPeriod, uint256 slot) private {
+        _setNavCheckpoint(lockPeriod, slot, navPerTier[lockPeriod]);
         uint256 nextSlot = slot + _slotSize(lockPeriod);
-        _ensureNavCheckpoint(lockPeriod, nextSlot, navPerTier[lockPeriod]);
+        _setNavCheckpoint(lockPeriod, nextSlot, navPerTier[lockPeriod]);
     }
 
     function _navAtOrBefore(LockPeriod lockPeriod, uint256 slot) private view returns (uint256) {
@@ -503,5 +571,28 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
             return total - expired;
         }
         return 0;
+    }
+
+    function _removePositionShares(Position memory position, uint256 unlockSlot) private {
+        LockPeriod lockPeriod = position.lockPeriod;
+        uint256 sharesAmount = position.sharesAmount;
+
+        totalSharesPerTier[lockPeriod] -= sharesAmount;
+
+        uint256 expiredForSlot = expiredSharesAtSlot[lockPeriod][unlockSlot];
+        if (expiredForSlot == 0) {
+            return;
+        }
+
+        uint256 amountToRemove = expiredForSlot < sharesAmount ? expiredForSlot : sharesAmount;
+        if (_lastExpiredSlotUpdated[lockPeriod] >= unlockSlot) {
+            cumulativeExpiredShares[lockPeriod] -= amountToRemove;
+            cumulativeExpiredSharesAtSlot[lockPeriod][unlockSlot] = cumulativeExpiredShares[lockPeriod];
+        }
+
+        expiredSharesAtSlot[lockPeriod][unlockSlot] = expiredForSlot - amountToRemove;
+        if (_lastExpiredSlotUpdated[lockPeriod] > unlockSlot) {
+            _lastExpiredSlotUpdated[lockPeriod] = unlockSlot;
+        }
     }
 }
