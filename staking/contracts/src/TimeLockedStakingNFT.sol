@@ -606,7 +606,8 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
             if (position.unlockTimestamp < block.timestamp) {
                 continue;
             }
-            totalPower += Math.mulDiv(position.sharesAmount, position.entryNav, PRECISION);
+            uint256 currentNav = _navAtOrBefore(position.lockPeriod, block.timestamp);
+            totalPower += Math.mulDiv(position.sharesAmount, currentNav, PRECISION);
         }
     }
 }
