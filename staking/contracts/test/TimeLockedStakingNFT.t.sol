@@ -71,6 +71,33 @@ contract TimeLockedStakingNFTTest is Test, IERC721Receiver {
         assertEq(staking.totalSharesPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), amount);
     }
 
+    function testGetUserLockPowahCountsActivePositions() public {
+        uint256 weekToken = staking.deposit(100 ether, TimeLockedStakingNFT.LockPeriod.OneWeek);
+        staking.deposit(200 ether, TimeLockedStakingNFT.LockPeriod.OneMonth);
+
+        address bob = address(0xB0B);
+        token.mint(bob, 300 ether);
+        vm.startPrank(bob);
+        token.approve(address(staking), type(uint256).max);
+        staking.deposit(300 ether, TimeLockedStakingNFT.LockPeriod.OneWeek);
+        vm.stopPrank();
+
+        uint256 selfPowah = staking.getUserLockPowah(address(this));
+        assertEq(selfPowah, 300 ether);
+
+        uint256 bobPowah = staking.getUserLockPowah(bob);
+        assertEq(bobPowah, 300 ether);
+
+        TimeLockedStakingNFT.Position memory weekPosition = staking.getPosition(weekToken);
+        vm.warp(weekPosition.unlockTimestamp + 1);
+
+        selfPowah = staking.getUserLockPowah(address(this));
+        assertEq(selfPowah, 200 ether);
+
+        bobPowah = staking.getUserLockPowah(bob);
+        assertEq(bobPowah, 0);
+    }
+
     function testWithdrawFailsBeforeUnlock() public {
         uint256 tokenId = staking.deposit(50 ether, TimeLockedStakingNFT.LockPeriod.OneMonth);
         TimeLockedStakingNFT.Position memory position = staking.getPosition(tokenId);

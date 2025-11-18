@@ -595,4 +595,18 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
             _lastExpiredSlotUpdated[lockPeriod] = unlockSlot;
         }
     }
+    /***** Governance ******/
+    function getUserLockPowah(address user) external view returns (uint256 totalPower) {
+        uint256 balance = balanceOf(user);
+        uint256[] memory nfts = new uint256[](balance);
+
+        for (uint256 i = 0; i < balance; i++) {
+            nfts[i] = tokenOfOwnerByIndex(user, i);
+            Position memory position = _positions[nfts[i]];
+            if (position.unlockTimestamp < block.timestamp) {
+                continue;
+            }
+            totalPower += Math.mulDiv(position.sharesAmount, position.entryNav, PRECISION);
+        }
+    }
 }
