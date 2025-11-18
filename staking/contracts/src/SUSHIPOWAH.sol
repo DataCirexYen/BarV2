@@ -32,7 +32,7 @@ contract SUSHIPOWAH {
     IERC20 meow = IERC20(0x650F44eD6F1FE0E1417cb4b3115d52494B4D9b6D);
     IERC20 tSushi = IERC20(0xf49764c9C5d644ece6aE2d18Ffd9F1E902629777);
     CauldronV2 xsushiCauldron = CauldronV2(0x98a84EfF6e008c5ed0289655CcdCa899bcb6B99F);
-    ITimeLockedStakingNFT  timeLockedStaking = ITimeLockedStakingNFT(0x0000000000000000000000000000000000000000);
+    ITimeLockedStakingNFT  timeLockedStaking = ITimeLockedStakingNFT(0x2e234DAe75C793f67A35089C9d99245E1C58470b);
 
     function name() external pure returns (string memory) { return "SUSHIPOWAH"; }
     function symbol() external pure returns (string memory) { return "SUSHIPOWAH"; }
