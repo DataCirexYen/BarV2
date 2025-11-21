@@ -74,9 +74,9 @@ interface ITimeLockedStakingNFT {
 
     function totalSharesPerTier(LockPeriod lockPeriod) external view returns (uint256);
 
-    function navPerTier(LockPeriod lockPeriod) external view returns (uint256);
+    function effectiveNavPerTier(LockPeriod lockPeriod) external view returns (uint256);
 
-    function navPerTierAtSlot(LockPeriod lockPeriod, uint256 slot) external view returns (uint256);
+    function effectiveNavPerTierAtSlot(LockPeriod lockPeriod, uint256 slot) external view returns (uint256);
 
     function expiredSharesAtSlot(LockPeriod lockPeriod, uint256 slot) external view returns (uint256);
 

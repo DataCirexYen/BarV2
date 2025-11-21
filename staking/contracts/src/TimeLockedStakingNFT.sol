@@ -13,6 +13,11 @@ import {Math} from "openzeppelin-contracts/contracts/utils/math/Math.sol";
  * @title TimeLockedStakingNFT
  * @notice Accepts ERC20 deposits, locks them for a fixed period and mints an ERC721 position NFT.
  *         Rewards are tracked per lock tier via a NAV accumulator that grows when new rewards are distributed.
+ *         
+ *         MEV Mitigation: This contract uses a "locked profit" model similar to Yearn v2 vaults.
+ *         When rewards are distributed, they are added to a tier's locked profit and unlock linearly
+ *         over a duration specific to each tier. This prevents MEV bots from capturing value by
+ *         depositing right before distributeRewards() and withdrawing immediately after.
  */
 contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -48,6 +53,17 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
         uint256 entryNav;
     }
 
+    /**
+     * @dev Tracks pending NAV deltas per tier to implement linear reward vesting.
+     *      This prevents MEV by ensuring NAV increases unlock gradually over time.
+     *      Pure effective NAV model: we track only the effective NAV and pending increases.
+     */
+    struct TierPendingNav {
+        uint256 pendingNavDelta;   // NAV increase (in PRECISION units) pending unlock
+        uint256 lastReport;        // Timestamp of last update
+        uint256 unlockDuration;    // Duration in seconds over which pendingNavDelta unlocks linearly
+    }
+
     /// -----------------------------------------------------------------------
     /// Storage
     /// -----------------------------------------------------------------------
@@ -56,8 +72,8 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
     uint256 public nextTokenId;
     mapping(uint256 => Position) private _positions;
     mapping(LockPeriod => uint256) public totalSharesPerTier;
-    mapping(LockPeriod => uint256) public navPerTier;
-    mapping(LockPeriod => mapping(uint256 => uint256)) public navPerTierAtSlot;
+    mapping(LockPeriod => uint256) public effectiveNavPerTier; // Pure effective NAV (only tracks realized value)
+    mapping(LockPeriod => mapping(uint256 => uint256)) public effectiveNavPerTierAtSlot; // Effective NAV checkpoints at each slot
     mapping(LockPeriod => uint256[]) private _navSlots; // strictly increasing slots recorded on reward distribution
     mapping(LockPeriod => mapping(uint256 => uint256)) public expiredSharesAtSlot;
     mapping(LockPeriod => uint256) public cumulativeExpiredShares;
@@ -66,6 +82,15 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
     mapping(LockPeriod => uint256) public boostFactorPerTier;
     address public rewardSource;
     uint256 public rewardDust;
+    
+    // Pending NAV tracking per tier (replaces locked profit model)
+    mapping(LockPeriod => TierPendingNav) public tierPendingNav;
+    
+    // Default unlock durations per tier (in seconds)
+    uint256 public constant UNLOCK_DURATION_ONE_WEEK = 7 days;
+    uint256 public constant UNLOCK_DURATION_ONE_MONTH = 30 days;
+    uint256 public constant UNLOCK_DURATION_THREE_MONTHS = 90 days;
+    uint256 public constant UNLOCK_DURATION_TWELVE_MONTHS = 365 days;
 
     uint256 private constant ONE_WEEK = 7 days;
     uint256 private constant FOUR_WEEKS = 4 * ONE_WEEK;
@@ -111,10 +136,10 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
             revert ZeroAddress();
         }
         stakingToken = stakingToken_;
-        navPerTier[LockPeriod.OneWeek] = PRECISION;
-        navPerTier[LockPeriod.OneMonth] = PRECISION;
-        navPerTier[LockPeriod.ThreeMonths] = PRECISION;
-        navPerTier[LockPeriod.TwelveMonths] = PRECISION;
+        effectiveNavPerTier[LockPeriod.OneWeek] = PRECISION;
+        effectiveNavPerTier[LockPeriod.OneMonth] = PRECISION;
+        effectiveNavPerTier[LockPeriod.ThreeMonths] = PRECISION;
+        effectiveNavPerTier[LockPeriod.TwelveMonths] = PRECISION;
         boostFactorPerTier[LockPeriod.OneWeek] = 1_050_000_000_000_000_000;
         boostFactorPerTier[LockPeriod.OneMonth] = 1_100_000_000_000_000_000;
         boostFactorPerTier[LockPeriod.ThreeMonths] = 1_200_000_000_000_000_000;
@@ -139,6 +164,18 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
         _ensureNavCheckpoint(LockPeriod.OneMonth, monthSlot, PRECISION);
         _ensureNavCheckpoint(LockPeriod.ThreeMonths, threeMonthSlot, PRECISION);
         _ensureNavCheckpoint(LockPeriod.TwelveMonths, twelveMonthSlot, PRECISION);
+        
+        // Initialize pending NAV unlock durations
+        tierPendingNav[LockPeriod.OneWeek].unlockDuration = UNLOCK_DURATION_ONE_WEEK;
+        tierPendingNav[LockPeriod.OneMonth].unlockDuration = UNLOCK_DURATION_ONE_MONTH;
+        tierPendingNav[LockPeriod.ThreeMonths].unlockDuration = UNLOCK_DURATION_THREE_MONTHS;
+        tierPendingNav[LockPeriod.TwelveMonths].unlockDuration = UNLOCK_DURATION_TWELVE_MONTHS;
+        
+        // Initialize lastReport timestamps
+        tierPendingNav[LockPeriod.OneWeek].lastReport = block.timestamp;
+        tierPendingNav[LockPeriod.OneMonth].lastReport = block.timestamp;
+        tierPendingNav[LockPeriod.ThreeMonths].lastReport = block.timestamp;
+        tierPendingNav[LockPeriod.TwelveMonths].lastReport = block.timestamp;
     }
 
     /// -----------------------------------------------------------------------
@@ -162,9 +199,12 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
 
         tokenId = ++nextTokenId;
 
-        // Determine the NAV applicable for the unlock slot (last checkpoint at or before it)
-        uint256 entryNav = _navAtOrBefore(lockPeriod, unlockTime);
+        // Update effective NAV to realize any pending deltas that have unlocked
+        _updateEffectiveNav(lockPeriod);
 
+        // Use effective NAV that accounts for pending deltas to prevent MEV
+        // This ensures new depositors don't immediately capture recent rewards
+        uint256 entryNav = _effectiveNav(lockPeriod, block.timestamp);
 
         uint256 sharesAmount = Math.mulDiv(amount, PRECISION, entryNav);
 
@@ -176,7 +216,11 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
             entryNav: entryNav
         });
 
-        totalSharesPerTier[lockPeriod] += sharesAmount;
+        uint256 previousTotalShares = totalSharesPerTier[lockPeriod];
+        uint256 newTotalShares = previousTotalShares + sharesAmount;
+        _rescalePendingNavOnShareChange(lockPeriod, previousTotalShares, newTotalShares);
+
+        totalSharesPerTier[lockPeriod] = newTotalShares;
         expiredSharesAtSlot[lockPeriod][unlockTime] += sharesAmount;
         stakingToken.safeTransferFrom(msg.sender, address(this), amount);
 
@@ -205,18 +249,19 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
             revert UnlockNotReached(position.unlockTimestamp, currentTimestamp);
         }
 
+        // Update effective NAV before calculating position value
+        _updateEffectiveNav(position.lockPeriod);
+
         uint256 unlockSlot = _floorToSlot(position.lockPeriod, position.unlockTimestamp);
         _realizeExpiredSharesUpTo(position.lockPeriod, unlockSlot);
-        // Use NAV at or before unlock, and cache it at the unlock slot if missing
-        uint256 navAtUnlock = _navAtOrBefore(position.lockPeriod, unlockSlot);
-        _ensureNavCheckpoint(position.lockPeriod, unlockSlot, navAtUnlock);
+        
+        // Use effective NAV that accounts for locked profit
+        uint256 effectiveNavNow = _effectiveNav(position.lockPeriod, currentTimestamp);
+        _ensureNavCheckpoint(position.lockPeriod, unlockSlot, effectiveNavNow);
 
         _removePositionShares(position, unlockSlot);
-
-        //Function for when we do the  non finish withdraw function.
-        //uint256 gain = Math.mulDiv(navAtUnlock - position.entryNav, position.sharesAmount, PRECISION);
         
-        uint256 payout = Math.mulDiv(position.sharesAmount, navAtUnlock, PRECISION);
+        uint256 payout = Math.mulDiv(position.sharesAmount, effectiveNavNow, PRECISION);
 
         delete _positions[tokenId];
         _burn(tokenId);
@@ -246,10 +291,15 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
         }
 
         LockPeriod lockPeriod = position.lockPeriod;
+        
+        // Update effective NAV before calculating position value
+        _updateEffectiveNav(lockPeriod);
+        
         uint256 currentSlot = _floorToSlot(lockPeriod, currentTimestamp);
         _realizeExpiredSharesUpTo(lockPeriod, currentSlot);
 
-        uint256 navAtCurrent = _navAtOrBefore(lockPeriod, currentSlot);
+        // Use effective NAV that accounts for locked profit
+        uint256 navAtCurrent = _effectiveNav(lockPeriod, currentTimestamp);
         uint256 principal = Math.mulDiv(position.sharesAmount, position.entryNav, PRECISION);
         uint256 currentValue = Math.mulDiv(position.sharesAmount, navAtCurrent, PRECISION);
         uint256 profit;
@@ -287,6 +337,13 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
             revert RewardSourceNotSet();
         }
 
+        // First, update effective NAV for all tiers based on elapsed time
+        // This realizes a portion of previously pending NAV deltas based on linear unlock schedule
+        _updateEffectiveNav(LockPeriod.OneWeek);
+        _updateEffectiveNav(LockPeriod.OneMonth);
+        _updateEffectiveNav(LockPeriod.ThreeMonths);
+        _updateEffectiveNav(LockPeriod.TwelveMonths);
+
         uint256 weekSlot = _floorToSlot(LockPeriod.OneWeek, block.timestamp);
         uint256 monthSlot = _floorToSlot(LockPeriod.OneMonth, block.timestamp);
         uint256 threeMonthSlot = _floorToSlot(LockPeriod.ThreeMonths, block.timestamp);
@@ -319,27 +376,36 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
         if (weekShares != 0) {
             uint256 weekReward = Math.mulDiv(totalReward, weekShares * weekBoostFactor, activeShares);
             weekNavDelta = Math.mulDiv(weekReward, PRECISION, weekShares);
-            navPerTier[LockPeriod.OneWeek] += weekNavDelta;
+            // Add NAV delta to pending - it will unlock linearly over UNLOCK_DURATION_ONE_WEEK
+            // Effective NAV will increase gradually as the delta unlocks
+            tierPendingNav[LockPeriod.OneWeek].pendingNavDelta += weekNavDelta;
             _recordNavOnDistribution(LockPeriod.OneWeek, weekSlot);
-            distributed += weekReward;
+            uint256 weekCredited = Math.mulDiv(weekNavDelta, weekShares, PRECISION);
+            distributed += weekCredited;
         }
 
         uint256 monthNavDelta;
         if (monthShares != 0) {
             uint256 monthReward = Math.mulDiv(totalReward, monthShares * monthBoostFactor, activeShares);
             monthNavDelta = Math.mulDiv(monthReward, PRECISION, monthShares);
-            navPerTier[LockPeriod.OneMonth] += monthNavDelta;
+            // Add NAV delta to pending - it will unlock linearly over UNLOCK_DURATION_ONE_MONTH
+            // Effective NAV will increase gradually as the delta unlocks
+            tierPendingNav[LockPeriod.OneMonth].pendingNavDelta += monthNavDelta;
             _recordNavOnDistribution(LockPeriod.OneMonth, monthSlot);
-            distributed += monthReward;
+            uint256 monthCredited = Math.mulDiv(monthNavDelta, monthShares, PRECISION);
+            distributed += monthCredited;
         }
 
         uint256 threeMonthNavDelta;
         if (threeMonthShares != 0) {
             uint256 threeMonthReward = Math.mulDiv(totalReward, threeMonthShares * threeMonthBoostFactor, activeShares);
             threeMonthNavDelta = Math.mulDiv(threeMonthReward, PRECISION, threeMonthShares);
-            navPerTier[LockPeriod.ThreeMonths] += threeMonthNavDelta;
+            // Add NAV delta to pending - it will unlock linearly over UNLOCK_DURATION_THREE_MONTHS
+            // Effective NAV will increase gradually as the delta unlocks
+            tierPendingNav[LockPeriod.ThreeMonths].pendingNavDelta += threeMonthNavDelta;
             _recordNavOnDistribution(LockPeriod.ThreeMonths, threeMonthSlot);
-            distributed += threeMonthReward;
+            uint256 threeMonthCredited = Math.mulDiv(threeMonthNavDelta, threeMonthShares, PRECISION);
+            distributed += threeMonthCredited;
         }
 
         uint256 twelveMonthNavDelta;
@@ -347,9 +413,12 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
             uint256 twelveMonthReward =
                 Math.mulDiv(totalReward, twelveMonthShares * twelveMonthBoostFactor, activeShares);
             twelveMonthNavDelta = Math.mulDiv(twelveMonthReward, PRECISION, twelveMonthShares);
-            navPerTier[LockPeriod.TwelveMonths] += twelveMonthNavDelta;
+            // Add NAV delta to pending - it will unlock linearly over UNLOCK_DURATION_TWELVE_MONTHS
+            // Effective NAV will increase gradually as the delta unlocks
+            tierPendingNav[LockPeriod.TwelveMonths].pendingNavDelta += twelveMonthNavDelta;
             _recordNavOnDistribution(LockPeriod.TwelveMonths, twelveMonthSlot);
-            distributed += twelveMonthReward;
+            uint256 twelveMonthCredited = Math.mulDiv(twelveMonthNavDelta, twelveMonthShares, PRECISION);
+            distributed += twelveMonthCredited;
         }
 
         rewardDust = totalReward - distributed;
@@ -417,9 +486,151 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
         return block.timestamp >= position.unlockTimestamp;
     }
 
+    /**
+     * @notice Get the current effective NAV for a tier at the current timestamp
+     * @dev This includes the base effective NAV plus any unlocked pending NAV deltas
+     * @param lockPeriod The lock tier to query
+     * @return The current effective NAV per share
+     */
+    function getCurrentEffectiveNav(LockPeriod lockPeriod) external view returns (uint256) {
+        return _effectiveNav(lockPeriod, block.timestamp);
+    }
+
     /// -----------------------------------------------------------------------
     /// Internal logic
     /// -----------------------------------------------------------------------
+    
+    /**
+     * @dev Calculate the unlocked NAV delta for a tier at a given timestamp.
+     *      The NAV delta unlocks linearly over the unlock duration.
+     * @param lockPeriod The lock tier to calculate for
+     * @param timestamp The timestamp to calculate at
+     * @return The amount of NAV delta that has been unlocked
+     */
+    function _unlockedNavDelta(LockPeriod lockPeriod, uint256 timestamp) private view returns (uint256) {
+        TierPendingNav storage tierPending = tierPendingNav[lockPeriod];
+        
+        if (tierPending.pendingNavDelta == 0) {
+            return 0;
+        }
+        
+        // If timestamp hasn't moved forward, nothing has unlocked yet
+        if (timestamp <= tierPending.lastReport) {
+            return 0;
+        }
+        
+        uint256 elapsed = timestamp - tierPending.lastReport;
+        
+        if (elapsed >= tierPending.unlockDuration) {
+            return tierPending.pendingNavDelta; // All NAV delta has been unlocked
+        }
+        
+        // Calculate linearly increasing unlocked NAV delta
+        return Math.mulDiv(
+            tierPending.pendingNavDelta,
+            elapsed,
+            tierPending.unlockDuration
+        );
+    }
+    
+    /**
+     * @dev Update the effective NAV for a tier based on elapsed time.
+     *      This realizes pending NAV deltas proportionally and modifies storage.
+     *      Should only be called during state-changing operations.
+     * @param lockPeriod The lock tier to update
+     */
+    function _updateEffectiveNav(LockPeriod lockPeriod) private {
+        TierPendingNav storage tierPending = tierPendingNav[lockPeriod];
+        
+        // Prevent issues if timestamp hasn't moved forward
+        if (block.timestamp <= tierPending.lastReport) {
+            return;
+        }
+        
+        uint256 elapsed = block.timestamp - tierPending.lastReport;
+        
+        if (tierPending.pendingNavDelta == 0) {
+            tierPending.lastReport = block.timestamp;
+            return;
+        }
+        
+        if (elapsed >= tierPending.unlockDuration) {
+            // All pending NAV has been unlocked - add it to effective NAV
+            effectiveNavPerTier[lockPeriod] += tierPending.pendingNavDelta;
+            tierPending.pendingNavDelta = 0;
+            tierPending.lastReport = block.timestamp;
+        } else {
+            // Realize pending NAV proportionally
+            uint256 unlockedDelta = Math.mulDiv(
+                tierPending.pendingNavDelta,
+                elapsed,
+                tierPending.unlockDuration
+            );
+            effectiveNavPerTier[lockPeriod] += unlockedDelta;
+            tierPending.pendingNavDelta -= unlockedDelta;
+            // Update lastReport to now so future calculations are relative to this point
+            tierPending.lastReport = block.timestamp;
+        }
+    }
+    
+    /**
+     * @dev Calculate the current effective NAV for a tier at a given timestamp.
+     *      This is the NAV that should be used for deposits, withdrawals, and early withdrawals.
+     *      Pure effective model: base effective NAV + unlocked pending NAV delta
+     * @param lockPeriod The lock tier to calculate for
+     * @param timestamp The timestamp to calculate at
+     * @return The effective NAV per share
+     */
+    function _effectiveNav(LockPeriod lockPeriod, uint256 timestamp) private view returns (uint256) {
+        uint256 baseNav = effectiveNavPerTier[lockPeriod];
+        uint256 unlockedDelta = _unlockedNavDelta(lockPeriod, timestamp);
+        return baseNav + unlockedDelta;
+    }
+
+    function _rescalePendingNavOnShareChange(
+        LockPeriod lockPeriod,
+        uint256 previousTotalShares,
+        uint256 newTotalShares
+    ) private {
+        if (previousTotalShares == newTotalShares) {
+            return;
+        }
+
+        TierPendingNav storage tierPending = tierPendingNav[lockPeriod];
+        uint256 pendingNavDelta = tierPending.pendingNavDelta;
+        if (pendingNavDelta == 0) {
+            return;
+        }
+
+        if (previousTotalShares == 0) {
+            // Pending NAV should already be zero when no shares exist, but guard just in case.
+            if (newTotalShares == 0) {
+                tierPending.pendingNavDelta = 0;
+            }
+            return;
+        }
+
+        uint256 lockedRewardBefore = Math.mulDiv(pendingNavDelta, previousTotalShares, PRECISION);
+        if (lockedRewardBefore == 0) {
+            tierPending.pendingNavDelta = 0;
+            return;
+        }
+
+        if (newTotalShares == 0) {
+            tierPending.pendingNavDelta = 0;
+            rewardDust += lockedRewardBefore;
+            return;
+        }
+
+        uint256 rescaledPending = Math.mulDiv(lockedRewardBefore, PRECISION, newTotalShares);
+        uint256 lockedRewardAfter = Math.mulDiv(rescaledPending, newTotalShares, PRECISION);
+        uint256 roundingLoss = lockedRewardBefore - lockedRewardAfter;
+        if (roundingLoss != 0) {
+            rewardDust += roundingLoss;
+        }
+
+        tierPending.pendingNavDelta = rescaledPending;
+    }
 
     function _slotSize(LockPeriod lockPeriod) private pure returns (uint256) {
         if (lockPeriod == LockPeriod.OneWeek) {
@@ -468,10 +679,10 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
     }
 
     function _ensureNavCheckpoint(LockPeriod lockPeriod, uint256 slot, uint256 navValue) private {
-        if (navPerTierAtSlot[lockPeriod][slot] != 0) {
+        if (effectiveNavPerTierAtSlot[lockPeriod][slot] != 0) {
             return;
         }
-        navPerTierAtSlot[lockPeriod][slot] = navValue;
+        effectiveNavPerTierAtSlot[lockPeriod][slot] = navValue;
         uint256[] storage slots = _navSlots[lockPeriod];
         uint256 len = slots.length;
         if (len == 0 || slots[len - 1] < slot) {
@@ -480,8 +691,8 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
     }
 
     function _setNavCheckpoint(LockPeriod lockPeriod, uint256 slot, uint256 navValue) private {
-        if (navPerTierAtSlot[lockPeriod][slot] == 0) {
-            navPerTierAtSlot[lockPeriod][slot] = navValue;
+        if (effectiveNavPerTierAtSlot[lockPeriod][slot] == 0) {
+            effectiveNavPerTierAtSlot[lockPeriod][slot] = navValue;
             uint256[] storage slots = _navSlots[lockPeriod];
             uint256 len = slots.length;
             if (len == 0 || slots[len - 1] < slot) {
@@ -489,53 +700,20 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
             }
             return;
         }
-        navPerTierAtSlot[lockPeriod][slot] = navValue;
+        effectiveNavPerTierAtSlot[lockPeriod][slot] = navValue;
     }
 
     function _recordNavOnDistribution(LockPeriod lockPeriod, uint256 slot) private {
-        _setNavCheckpoint(lockPeriod, slot, navPerTier[lockPeriod]);
+        // Record the current effective NAV (including partially unlocked pending deltas)
+        uint256 currentEffectiveNav = _effectiveNav(lockPeriod, block.timestamp);
+        _setNavCheckpoint(lockPeriod, slot, currentEffectiveNav);
         uint256 nextSlot = slot + _slotSize(lockPeriod);
-        _setNavCheckpoint(lockPeriod, nextSlot, navPerTier[lockPeriod]);
+        _setNavCheckpoint(lockPeriod, nextSlot, currentEffectiveNav);
     }
 
-    function _navAtOrBefore(LockPeriod lockPeriod, uint256 slot) private view returns (uint256) {
-        // exact match fast-path
-        slot = _floorToSlot(lockPeriod, slot);
-        uint256 exact = navPerTierAtSlot[lockPeriod][slot];
-        if (exact != 0) return exact;
-        return _fallbackNavAtOrBefore(lockPeriod, slot);
-    }
-
-    // Fallback resolution: find NAV at the latest recorded distribution slot <= target slot
-    function _fallbackNavAtOrBefore(LockPeriod lockPeriod, uint256 slot) private view returns (uint256) {
-        slot = _floorToSlot(lockPeriod, slot);
-        uint256[] storage slots = _navSlots[lockPeriod];
-        uint256 len = slots.length;
-        if (len == 0) {
-            return PRECISION; // no distributions yet
-        }
-        // if the earliest recorded slot is after the target, baseline
-        if (slots[0] > slot) {
-            return PRECISION;
-        }
-        // if the latest recorded slot is before/equal target, take it
-        if (slots[len - 1] <= slot) {
-            return navPerTierAtSlot[lockPeriod][slots[len - 1]];
-        }
-
-        // binary search for greatest index with slots[i] <= slot
-        uint256 lo = 0;
-        uint256 hi = len - 1;
-        while (lo < hi) {
-            uint256 mid = (lo + hi + 1) >> 1; // bias to the right
-            if (slots[mid] <= slot) {
-                lo = mid;
-            } else {
-                hi = mid - 1;
-            }
-        }
-        return navPerTierAtSlot[lockPeriod][slots[lo]];
-    }
+    // Note: _navAtOrBefore and _fallbackNavAtOrBefore have been removed as they are no longer needed
+    // with the new locked profit model. The effective NAV is now calculated using _effectiveNav()
+    // which accounts for locked profit that unlocks linearly over time.
 
     function _realizeExpiredSharesUpTo(LockPeriod lockPeriod, uint256 slot) private {
         uint256 targetSlot = _floorToSlot(lockPeriod, slot);
@@ -544,7 +722,8 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
 
         if (targetSlot <= lastSlot) {
             cumulativeExpiredSharesAtSlot[lockPeriod][targetSlot] = cumulative;
-            _ensureNavCheckpoint(lockPeriod, targetSlot, navPerTier[lockPeriod]);
+            uint256 currentEffectiveNav = _effectiveNav(lockPeriod, block.timestamp);
+            _ensureNavCheckpoint(lockPeriod, targetSlot, currentEffectiveNav);
             return;
         }
 
@@ -554,7 +733,8 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
             current += size;
             cumulative += expiredSharesAtSlot[lockPeriod][current];
             cumulativeExpiredSharesAtSlot[lockPeriod][current] = cumulative;
-            _ensureNavCheckpoint(lockPeriod, current, navPerTier[lockPeriod]);
+            uint256 currentEffectiveNav = _effectiveNav(lockPeriod, block.timestamp);
+            _ensureNavCheckpoint(lockPeriod, current, currentEffectiveNav);
         }
 
         cumulativeExpiredShares[lockPeriod] = cumulative;
@@ -577,7 +757,12 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
         LockPeriod lockPeriod = position.lockPeriod;
         uint256 sharesAmount = position.sharesAmount;
 
-        totalSharesPerTier[lockPeriod] -= sharesAmount;
+        uint256 previousTotalShares = totalSharesPerTier[lockPeriod];
+        uint256 newTotalShares = previousTotalShares - sharesAmount;
+
+        _rescalePendingNavOnShareChange(lockPeriod, previousTotalShares, newTotalShares);
+
+        totalSharesPerTier[lockPeriod] = newTotalShares;
 
         uint256 expiredForSlot = expiredSharesAtSlot[lockPeriod][unlockSlot];
         if (expiredForSlot == 0) {
@@ -606,7 +791,8 @@ contract TimeLockedStakingNFT is ERC721Enumerable, Ownable, ReentrancyGuard {
             if (position.unlockTimestamp < block.timestamp) {
                 continue;
             }
-            uint256 currentNav = _navAtOrBefore(position.lockPeriod, block.timestamp);
+            // Use effective NAV that accounts for locked profit
+            uint256 currentNav = _effectiveNav(position.lockPeriod, block.timestamp);
             totalPower += Math.mulDiv(position.sharesAmount, currentNav, PRECISION);
         }
     }

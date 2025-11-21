@@ -6,13 +6,18 @@ import {TimeLockedStakingNFT} from "../../src/TimeLockedStakingNFT.sol";
 import {BaseComplexSetup} from "../fixtures/BaseComplexSetup.t.sol";
 
 contract ComplexEnvDepositTest is BaseComplexSetup {
-    function testEntryNavIsCorrect() public view {
-        uint256 currentWeekSlot = _floorTimestamp(block.timestamp, 1 weeks);
-        uint256 slot = currentWeekSlot + 1 weeks;
-        uint256 nav = staking.navPerTierAtSlot(TimeLockedStakingNFT.LockPeriod.OneWeek, slot);
-        assertGt(nav, 0);
-        // Optional: matches current accumulator since last distribution was this week
-        assertEq(nav, staking.navPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek));
+    function testEntryNavIsCorrect() public {
+        // In the pure effective NAV model, new deposits get the current effective NAV
+        // (which includes only the unlocked portion of pending NAV deltas)
+        uint256 amount = 100 ether;
+        vm.prank(NEW_USER);
+        uint256 tokenId = staking.deposit(amount, TimeLockedStakingNFT.LockPeriod.OneWeek);
+        
+        TimeLockedStakingNFT.Position memory position = staking.getPosition(tokenId);
+        assertGt(position.entryNav, 0);
+        
+        // The entry NAV should be approximately equal to the effective NAV at deposit time
+        assertApproxEqAbs(position.entryNav, staking.effectiveNavPerTier(TimeLockedStakingNFT.LockPeriod.OneWeek), 1e15);
     }
     function testBasicDepositInBusyEnvironment() public {
         uint256 amount = 250 ether;
